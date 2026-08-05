@@ -11,7 +11,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { BRAIN_DIR } from './agPaths';
+import { BRAIN_DIR, BRAIN_DIRS } from './agPaths';
 import { decodeVarint, skipProtobufField } from './protobuf';
 import { dbGet } from './db';
 
@@ -34,15 +34,16 @@ export function isGenericTitle(title: string | null): boolean {
  * Returns the first non-trivial line of text, or null if nothing useful found.
  */
 export function getTitleFromBrain(cid: string, maxLen = 55): string | null {
-    const brainPath = path.join(BRAIN_DIR, cid);
-    if (!fs.existsSync(brainPath) || !fs.statSync(brainPath).isDirectory()) return null;
-    try {
-        const files = fs.readdirSync(brainPath)
-            .filter(f => f.endsWith('.md') && !f.startsWith('.'))
-            .map(f => ({ name: f, stat: fs.statSync(path.join(brainPath, f)) }))
-            .sort((a, b) => a.stat.mtimeMs - b.stat.mtimeMs);
-        for (const { name } of files) {
-            try {
+    for (const bDir of BRAIN_DIRS) {
+        const brainPath = path.join(bDir, cid);
+        if (!fs.existsSync(brainPath) || !fs.statSync(brainPath).isDirectory()) continue;
+        try {
+            const files = fs.readdirSync(brainPath)
+                .filter(f => f.endsWith('.md') && !f.startsWith('.'))
+                .map(f => ({ name: f, stat: fs.statSync(path.join(brainPath, f)) }))
+                .sort((a, b) => a.stat.mtimeMs - b.stat.mtimeMs);
+            for (const { name } of files) {
+                try {
                 const content = fs.readFileSync(path.join(brainPath, name), 'utf8').substring(0, 2000);
                 const lines = content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
                 for (const line of lines) {
@@ -54,8 +55,9 @@ export function getTitleFromBrain(cid: string, maxLen = 55): string | null {
                     }
                 }
             } catch { /* ignore individual file errors */ }
-        }
-    } catch { /* ignore directory errors */ }
+            }
+        } catch { /* ignore directory errors */ }
+    }
     return null;
 }
 

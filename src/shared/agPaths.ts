@@ -16,7 +16,29 @@ export const isMac = process.platform === 'darwin';
 export const isLinux = process.platform === 'linux';
 export const isWindows = process.platform === 'win32';
 
+// ─── Constants for Candidate App Folder & Title Names ─────────────────
+const APP_FOLDER_NAMES = ['antigravity-ide', 'antigravity'];
+const APP_TITLE_NAMES = ['Antigravity IDE', 'Antigravity'];
+const AG_APP_BUNDLE_NAMES = ['Antigravity IDE.app', 'Antigravity.app'];
+
 // ─── Path Resolution Helpers ─────────────────────────────────────────
+
+function isDir(p: string): boolean {
+    try {
+        return fs.existsSync(p) && fs.statSync(p).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
+function resolveAllExistingDirs(paths: string[]): string[] {
+    const existing = paths.filter(isDir);
+    return existing.length > 0 ? existing : [paths[0]];
+}
+
+function resolveFirstExistingDir(paths: string[]): string {
+    return resolveAllExistingDirs(paths)[0];
+}
 
 function resolveFirstExistingPath(paths: string[]): string {
     for (const p of paths) {
@@ -25,61 +47,43 @@ function resolveFirstExistingPath(paths: string[]): string {
     return paths[0];
 }
 
-function resolveFirstExistingDir(paths: string[]): string {
-    for (const p of paths) {
-        try {
-            if (fs.existsSync(p) && fs.statSync(p).isDirectory()) return p;
-        } catch { /* ignore */ }
-    }
-    return paths[0];
+function buildDotGeminiSubdirs(subDir?: string): string[] {
+    return APP_FOLDER_NAMES.map(name =>
+        subDir ? path.join(os.homedir(), '.gemini', name, subDir) : path.join(os.homedir(), '.gemini', name)
+    );
 }
 
 // ─── Antigravity Application Paths ───────────────────────────────────
 
 /** Base Antigravity .gemini data directory */
-export const GEMINI_AG_DIR = resolveFirstExistingDir([
-    path.join(os.homedir(), '.gemini', 'antigravity-ide'),
-    path.join(os.homedir(), '.gemini', 'antigravity'),
-]);
+export const GEMINI_AG_DIR = resolveFirstExistingDir(buildDotGeminiSubdirs());
+
+/** All candidate brain directories (IDE and CLI) */
+export const BRAIN_DIRS = resolveAllExistingDirs(buildDotGeminiSubdirs('brain'));
+
+/** All candidate conversation directories (IDE and CLI) */
+export const CONVERSATIONS_DIRS = resolveAllExistingDirs(buildDotGeminiSubdirs('conversations'));
 
 /** Directory containing conversation .pb protobuf files */
-export const CONVERSATIONS_DIR = resolveFirstExistingDir([
-    path.join(os.homedir(), '.gemini', 'antigravity-ide', 'conversations'),
-    path.join(os.homedir(), '.gemini', 'antigravity', 'conversations'),
-]);
+export const CONVERSATIONS_DIR = CONVERSATIONS_DIRS[0];
 
 /** Directory containing conversation brain data (transcripts, artifacts) */
-export const BRAIN_DIR = resolveFirstExistingDir([
-    path.join(os.homedir(), '.gemini', 'antigravity-ide', 'brain'),
-    path.join(os.homedir(), '.gemini', 'antigravity', 'brain'),
-]);
+export const BRAIN_DIR = BRAIN_DIRS[0];
 
 /** Path to Antigravity's local state SQLite DB (conversation index, active account, etc.) */
 export const STATE_DB_PATH = resolveFirstExistingPath(
     isMac
-        ? [
-            path.join(os.homedir(), 'Library', 'Application Support', 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
-            path.join(os.homedir(), 'Library', 'Application Support', 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
-        ]
+        ? APP_TITLE_NAMES.map(name => path.join(os.homedir(), 'Library', 'Application Support', name, 'User', 'globalStorage', 'state.vscdb'))
         : isLinux
-            ? [
-                path.join(os.homedir(), '.config', 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
-                path.join(os.homedir(), '.config', 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
-            ]
+            ? APP_TITLE_NAMES.map(name => path.join(os.homedir(), '.config', name, 'User', 'globalStorage', 'state.vscdb'))
             : isWindows
-                ? [
-                    path.join(process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
-                    path.join(process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
-                ]
+                ? APP_TITLE_NAMES.map(name => path.join(process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'), name, 'User', 'globalStorage', 'state.vscdb'))
                 : ['']
 );
 
 /** Ordered list of candidate cert paths for the local language server */
 export const LS_CERT_PATHS: string[] = isMac
-    ? [
-        '/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/dist/languageServer/cert.pem',
-        '/Applications/Antigravity.app/Contents/Resources/app/extensions/antigravity/dist/languageServer/cert.pem',
-    ]
+    ? AG_APP_BUNDLE_NAMES.map(appName => `/Applications/${appName}/Contents/Resources/app/extensions/antigravity/dist/languageServer/cert.pem`)
     : isLinux
         ? [
             '/opt/antigravity/resources/app/extensions/antigravity/dist/languageServer/cert.pem',
@@ -107,10 +111,7 @@ export const LS_PROCESS_GREP = isMac
  * Tried in order: vscode.env.appRoot (injected at runtime), then platform defaults.
  */
 const AG_APP_ROOT_CANDIDATES: string[] = isMac
-    ? [
-        '/Applications/Antigravity IDE.app/Contents/Resources/app',
-        '/Applications/Antigravity.app/Contents/Resources/app',
-    ]
+    ? AG_APP_BUNDLE_NAMES.map(appName => `/Applications/${appName}/Contents/Resources/app`)
     : isLinux
         ? [
             '/opt/antigravity/resources/app',

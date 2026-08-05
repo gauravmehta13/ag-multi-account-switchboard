@@ -29,7 +29,7 @@ import { aggregateFromPerConvo, extractTokens } from './aggregator';
 import { StatsCache } from './cache';
 import { ProcessLock } from './processLock';
 import { getGlobalIndexData } from '../../shared/titleResolver';
-import { BRAIN_DIR, CONVERSATIONS_DIR } from '../../shared/agPaths';
+import { BRAIN_DIR, BRAIN_DIRS, CONVERSATIONS_DIR } from '../../shared/agPaths';
 import { concurrentPool } from './pool';
 
 const log = createLogger('UsageStats');
@@ -694,24 +694,28 @@ export class UsageStatsService {
         return result.stats;
     }
 
-    /** Scan ~/.gemini/antigravity/brain/ for conversation UUIDs */
+    /** Scan brain directories for conversation UUIDs */
     private discoverConversationIds(): string[] {
-        const brainDir = BRAIN_DIR;
-        if (!fs.existsSync(brainDir)) {
-            log.warn(`discoverConversationIds: brain dir does not exist: ${brainDir}`);
-            return [];
+        const brainDirs = BRAIN_DIRS;
+        const ids = new Set<string>();
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+        for (const brainDir of brainDirs) {
+            try {
+                if (!fs.existsSync(brainDir)) continue;
+                const allEntries = fs.readdirSync(brainDir, { withFileTypes: true });
+                const uuidDirs = allEntries.filter(d => d.isDirectory() && UUID_RE.test(d.name));
+                log.diag(`discoverConversationIds: ${brainDir} has ${allEntries.length} total entries, ${uuidDirs.length} are UUID conversation dirs`);
+                for (const d of uuidDirs) {
+                    ids.add(d.name);
+                }
+            } catch (e: any) {
+                log.warn(`discoverConversationIds: failed to read brain dir ${brainDir}: ${e?.message}`);
+            }
         }
 
-        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        try {
-            const allEntries = fs.readdirSync(brainDir, { withFileTypes: true });
-            const uuidDirs = allEntries.filter(d => d.isDirectory() && UUID_RE.test(d.name));
-            log.diag(`discoverConversationIds: brain dir has ${allEntries.length} total entries, ${uuidDirs.length} are UUID conversation dirs`);
-            return uuidDirs.map(d => d.name);
-        } catch (e: any) {
-            log.warn(`discoverConversationIds: failed to read brain dir: ${e?.message}`);
-            return [];
-        }
+        log.diag(`discoverConversationIds: total unique conversation UUIDs found: ${ids.size}`);
+        return Array.from(ids);
     }
 
     // ─── Response Extractors ───
