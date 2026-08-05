@@ -122,7 +122,7 @@ export class UsageStatsService {
     ): Promise<DeepUsageStats | null> {
         try {
             this.rawFetchCounts = {};
-            const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+            const brainDir = BRAIN_DIR;
 
 
             const allIds = this.discoverConversationIds();
@@ -696,7 +696,7 @@ export class UsageStatsService {
 
     /** Scan ~/.gemini/antigravity/brain/ for conversation UUIDs */
     private discoverConversationIds(): string[] {
-        const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+        const brainDir = BRAIN_DIR;
         if (!fs.existsSync(brainDir)) {
             log.warn(`discoverConversationIds: brain dir does not exist: ${brainDir}`);
             return [];

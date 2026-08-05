@@ -11,8 +11,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { GEMINI_AG_DIR } from '../shared/agPaths';
 
-const LOCK_DIR = path.join(os.homedir(), '.gemini', 'antigravity');
+const LOCK_DIR = GEMINI_AG_DIR;
 const MAX_LOCK_AGE_MS = 30 * 1000; // 30 seconds (down from 5 min — refresh should never take this long)
 
 // Unique per extension host lifecycle — changes on Reload Window

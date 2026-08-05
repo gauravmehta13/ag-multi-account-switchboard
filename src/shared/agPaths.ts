@@ -7,6 +7,7 @@
  * All other modules should import paths from here, not re-define them.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -15,26 +16,68 @@ export const isMac = process.platform === 'darwin';
 export const isLinux = process.platform === 'linux';
 export const isWindows = process.platform === 'win32';
 
+// ─── Path Resolution Helpers ─────────────────────────────────────────
+
+function resolveFirstExistingPath(paths: string[]): string {
+    for (const p of paths) {
+        if (fs.existsSync(p)) return p;
+    }
+    return paths[0];
+}
+
+function resolveFirstExistingDir(paths: string[]): string {
+    for (const p of paths) {
+        try {
+            if (fs.existsSync(p) && fs.statSync(p).isDirectory()) return p;
+        } catch { /* ignore */ }
+    }
+    return paths[0];
+}
+
 // ─── Antigravity Application Paths ───────────────────────────────────
 
-/** Path to Antigravity's local state SQLite DB (conversation index, active account, etc.) */
-export const STATE_DB_PATH = isMac
-    ? path.join(os.homedir(), 'Library', 'Application Support', 'Antigravity', 'User', 'globalStorage', 'state.vscdb')
-    : isLinux
-        ? path.join(os.homedir(), '.config', 'Antigravity', 'User', 'globalStorage', 'state.vscdb')
-        : isWindows
-            ? path.join(process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'Antigravity', 'User', 'globalStorage', 'state.vscdb')
-            : '';
+/** Base Antigravity .gemini data directory */
+export const GEMINI_AG_DIR = resolveFirstExistingDir([
+    path.join(os.homedir(), '.gemini', 'antigravity-ide'),
+    path.join(os.homedir(), '.gemini', 'antigravity'),
+]);
 
 /** Directory containing conversation .pb protobuf files */
-export const CONVERSATIONS_DIR = path.join(os.homedir(), '.gemini', 'antigravity', 'conversations');
+export const CONVERSATIONS_DIR = resolveFirstExistingDir([
+    path.join(os.homedir(), '.gemini', 'antigravity-ide', 'conversations'),
+    path.join(os.homedir(), '.gemini', 'antigravity', 'conversations'),
+]);
 
 /** Directory containing conversation brain data (transcripts, artifacts) */
-export const BRAIN_DIR = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+export const BRAIN_DIR = resolveFirstExistingDir([
+    path.join(os.homedir(), '.gemini', 'antigravity-ide', 'brain'),
+    path.join(os.homedir(), '.gemini', 'antigravity', 'brain'),
+]);
+
+/** Path to Antigravity's local state SQLite DB (conversation index, active account, etc.) */
+export const STATE_DB_PATH = resolveFirstExistingPath(
+    isMac
+        ? [
+            path.join(os.homedir(), 'Library', 'Application Support', 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
+            path.join(os.homedir(), 'Library', 'Application Support', 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
+        ]
+        : isLinux
+            ? [
+                path.join(os.homedir(), '.config', 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
+                path.join(os.homedir(), '.config', 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
+            ]
+            : isWindows
+                ? [
+                    path.join(process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
+                    path.join(process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
+                ]
+                : ['']
+);
 
 /** Ordered list of candidate cert paths for the local language server */
 export const LS_CERT_PATHS: string[] = isMac
     ? [
+        '/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/dist/languageServer/cert.pem',
         '/Applications/Antigravity.app/Contents/Resources/app/extensions/antigravity/dist/languageServer/cert.pem',
     ]
     : isLinux
@@ -64,7 +107,10 @@ export const LS_PROCESS_GREP = isMac
  * Tried in order: vscode.env.appRoot (injected at runtime), then platform defaults.
  */
 const AG_APP_ROOT_CANDIDATES: string[] = isMac
-    ? ['/Applications/Antigravity.app/Contents/Resources/app']
+    ? [
+        '/Applications/Antigravity IDE.app/Contents/Resources/app',
+        '/Applications/Antigravity.app/Contents/Resources/app',
+    ]
     : isLinux
         ? [
             '/opt/antigravity/resources/app',
