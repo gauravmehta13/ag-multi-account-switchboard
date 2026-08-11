@@ -3,16 +3,16 @@
   "displayName": "AG Multi-Account Switchboard",
   "description": "Switch between Antigravity accounts instantly. Monitor AI quotas, token budgets and reset timers — all in one sidebar panel.",
   "icon": "assets/icon.png",
-  "version": "3.2.3",
-  "publisher": "wellthewell",
+  "version": "3.2.4",
+  "publisher": "gauravmehta13",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/erennyuksell/ag-multi-account-switchboard"
+    "url": "https://github.com/gauravmehta13/ag-multi-account-switchboard"
   },
-  "homepage": "https://github.com/erennyuksell/ag-multi-account-switchboard#readme",
+  "homepage": "https://github.com/gauravmehta13/ag-multi-account-switchboard#readme",
   "bugs": {
-    "url": "https://github.com/erennyuksell/ag-multi-account-switchboard/issues"
+    "url": "https://github.com/gauravmehta13/ag-multi-account-switchboard/issues"
   },
   "categories": [
     "Other",
