@@ -1,24 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Central hub -->
-  <circle cx="12" cy="12" r="2.5"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Orbiting switchboard path -->
+  <ellipse cx="12" cy="14" rx="9.8" ry="3.6" transform="rotate(-18 12 14)" stroke-width="1.1" stroke-opacity="0.65" />
+  
+  <!-- Account switch nodes -->
+  <circle cx="2.6" cy="11.2" r="1.25" fill="currentColor" />
+  <circle cx="21.4" cy="16.8" r="1.25" fill="currentColor" />
+  <circle cx="12" cy="3.6" r="1.25" fill="currentColor" />
 
-  <!-- Top account: head + shoulder arc + connector -->
-  <circle cx="12" cy="3" r="1.2"/>
-  <path d="M9.8 5.2 Q12 6.8 14.2 5.2"/>
-  <path d="M12 6.8 L12 9.5"/>
-
-  <!-- Right account: head + shoulder arc + connector -->
-  <circle cx="21" cy="12" r="1.2"/>
-  <path d="M18.8 9.8 Q17.2 12 18.8 14.2"/>
-  <path d="M18 12 L14.5 12"/>
-
-  <!-- Bottom account: head + shoulder arc + connector -->
-  <circle cx="12" cy="21" r="1.2"/>
-  <path d="M9.8 18.8 Q12 17.2 14.2 18.8"/>
-  <path d="M12 18 L12 14.5"/>
-
-  <!-- Left account: head + shoulder arc + connector -->
-  <circle cx="3" cy="12" r="1.2"/>
-  <path d="M5.2 9.8 Q6.8 12 5.2 14.2"/>
-  <path d="M6 12 L9.5 12"/>
+  <!-- Antigravity arch curve -->
+  <path d="M 4.2 19.8 C 4.9 16.8 7.2 9.8 12 4.8 C 16.8 9.8 19.1 16.8 19.8 19.8 C 20.2 20.8 18.9 21.4 17.8 20.0 C 16.2 17.6 14.5 13.5 12 13.5 C 9.5 13.5 7.8 17.6 6.2 20.0 C 5.1 21.4 3.8 20.8 4.2 19.8 Z" fill="currentColor" stroke="none" />
 </svg>

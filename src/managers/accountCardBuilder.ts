@@ -54,6 +54,52 @@ function resolveLabel(apiKey: string, labelMap: Map<string, string>): string {
     return shortModelName(apiKey);
 }
 
+/**
+ * Group raw individual models into 2 canonical groups: 'Claude' (which includes Claude & GPT) and 'Gemini'.
+ * Only these 2 groups will be visible in the UI.
+ */
+export function groupModels(rawModels: ModelCard[]): ModelCard[] {
+    const claudeItems: ModelCard[] = [];
+    const geminiItems: ModelCard[] = [];
+
+    for (const m of rawModels) {
+        const text = `${m.id} ${m.label}`.toLowerCase();
+        if (text.includes('claude') || text.includes('gpt')) {
+            claudeItems.push(m);
+        } else if (text.includes('gemini')) {
+            geminiItems.push(m);
+        }
+    }
+
+    const result: ModelCard[] = [];
+
+    if (claudeItems.length > 0) {
+        const bottleneck = claudeItems.reduce((min, cur) => cur.pct < min.pct ? cur : min, claudeItems[0]);
+        const resetTime = bottleneck.resetTime || claudeItems.find(i => i.resetTime)?.resetTime || '';
+        result.push({
+            id: 'claude',
+            label: 'Claude',
+            pct: bottleneck.pct,
+            resetTime,
+            isLocal: claudeItems[0].isLocal,
+        });
+    }
+
+    if (geminiItems.length > 0) {
+        const bottleneck = geminiItems.reduce((min, cur) => cur.pct < min.pct ? cur : min, geminiItems[0]);
+        const resetTime = bottleneck.resetTime || geminiItems.find(i => i.resetTime)?.resetTime || '';
+        result.push({
+            id: 'gemini',
+            label: 'Gemini',
+            pct: bottleneck.pct,
+            resetTime,
+            isLocal: geminiItems[0].isLocal,
+        });
+    }
+
+    return result;
+}
+
 export function buildAccountCards(
     localData: LocalQuotaData | null,
     trackedQuotas: AccountQuota[],
@@ -70,13 +116,22 @@ export function buildAccountCards(
     const status = localData?.userStatus;
     const localEmail = (status?.email || '').toLowerCase();
 
+    // Normalize selectedModels for status bar toggles ('claude', 'gemini')
+    const normalizedSelected: string[] = [];
+    if (selectedModels.some(id => id === 'claude' || /claude|gpt/i.test(id))) {
+        normalizedSelected.push('claude');
+    }
+    if (selectedModels.some(id => id === 'gemini' || /gemini/i.test(id))) {
+        normalizedSelected.push('gemini');
+    }
+
     if (status) {
         const knownDisplayNames = new Set(Object.values(MODEL_DISPLAY_NAMES));
         const rawModels = (status.cascadeModelConfigData?.clientModelConfigs || [])
             .filter((m: any) => m.quotaInfo && knownDisplayNames.has(m.label || shortModelName(m.modelOrAlias?.model)))
             .sort((a: any, b: any) => (a.label || '').localeCompare(b.label || ''));
 
-        const models: ModelCard[] = rawModels.map((m: any) => ({
+        const rawModelCards: ModelCard[] = rawModels.map((m: any) => ({
             id: m.modelOrAlias?.model || m.label,
             label: m.label || shortModelName(m.modelOrAlias?.model),
             pct: m.quotaInfo.remainingFraction !== undefined
@@ -86,6 +141,7 @@ export function buildAccountCards(
             isLocal: true,
         }));
 
+        const models = groupModels(rawModelCards);
         const bottleneckModel = models.length > 0 ? models.reduce((a, b) => a.pct < b.pct ? a : b) : null;
         const userTier = parseUserTier(status.userTier);
         const planStatus = parsePlanStatus(status.planStatus);
@@ -114,7 +170,7 @@ export function buildAccountCards(
             flowCreditsMax: planStatus.planInfo.monthlyFlowCredits,
             resetTime: bottleneckModel?.resetTime || models[0]?.resetTime || '',
             isError: false,
-            selectedModels,
+            selectedModels: normalizedSelected,
             isLocal: true,
         });
     }
@@ -127,7 +183,7 @@ export function buildAccountCards(
         const trackedEmail = (trackedQuota.account.email || '').toLowerCase();
         if (dedupEmail && trackedEmail === dedupEmail) continue;
 
-        const models: ModelCard[] = (trackedQuota.models || []).map(m => ({
+        const rawModelCards: ModelCard[] = (trackedQuota.models || []).map(m => ({
             id: m.name,
             label: resolveLabel(m.name, labelMap),
             pct: m.percentage || 0,
@@ -135,6 +191,7 @@ export function buildAccountCards(
             isLocal: false,
         }));
 
+        const models = groupModels(rawModelCards);
         const bottleneckModel = models.length > 0 ? models.reduce((a, b) => a.pct < b.pct ? a : b) : null;
 
         cards.push({

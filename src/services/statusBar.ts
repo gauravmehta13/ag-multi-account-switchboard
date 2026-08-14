@@ -62,19 +62,66 @@ export class StatusBarService {
         const data = this.lastQuotaData;
         const selectedIds = this.lastSelectedIds;
 
-        const rawModels = data?.userStatus?.cascadeModelConfigData?.clientModelConfigs;
-        if (!rawModels || rawModels.length === 0) return;
+        const rawConfigs = data?.userStatus?.cascadeModelConfigData?.clientModelConfigs;
+        if (!rawConfigs || rawConfigs.length === 0) return;
 
-        const sorted = [...rawModels].sort((a, b) => (a.label || '').localeCompare(b.label || ''));
-        const selected = sorted.filter(m => selectedIds.includes(m.modelOrAlias?.model || ''));
+        // Group into Claude (including GPT) and Gemini
+        const claudeConfigs: ClientModelConfig[] = [];
+        const geminiConfigs: ClientModelConfig[] = [];
+
+        for (const m of rawConfigs) {
+            if (!m.quotaInfo) continue;
+            const text = `${m.modelOrAlias?.model || ''} ${m.label || ''}`.toLowerCase();
+            if (text.includes('claude') || text.includes('gpt')) {
+                claudeConfigs.push(m);
+            } else if (text.includes('gemini')) {
+                geminiConfigs.push(m);
+            }
+        }
+
+        const groups: Array<{ id: string; label: string; pct: number | null; resetTime?: string }> = [];
+
+        if (claudeConfigs.length > 0) {
+            let minPct: number | null = null;
+            let resetTime = '';
+            for (const m of claudeConfigs) {
+                const pct = getQuotaPercent(m);
+                if (pct !== null) {
+                    if (minPct === null || pct < minPct) {
+                        minPct = pct;
+                        resetTime = m.quotaInfo?.resetTime || resetTime;
+                    }
+                }
+            }
+            groups.push({ id: 'claude', label: 'Claude', pct: minPct, resetTime });
+        }
+
+        if (geminiConfigs.length > 0) {
+            let minPct: number | null = null;
+            let resetTime = '';
+            for (const m of geminiConfigs) {
+                const pct = getQuotaPercent(m);
+                if (pct !== null) {
+                    if (minPct === null || pct < minPct) {
+                        minPct = pct;
+                        resetTime = m.quotaInfo?.resetTime || resetTime;
+                    }
+                }
+            }
+            groups.push({ id: 'gemini', label: 'Gemini', pct: minPct, resetTime });
+        }
+
+        const isClaudeSelected = selectedIds.some(id => id === 'claude' || /claude|gpt/i.test(id));
+        const isGeminiSelected = selectedIds.some(id => id === 'gemini' || /gemini/i.test(id));
+
+        const selectedGroups = groups.filter(g => (g.id === 'claude' && isClaudeSelected) || (g.id === 'gemini' && isGeminiSelected));
 
         // ── Status bar text ──
-        if (selected.length === 0) {
+        if (selectedGroups.length === 0) {
             this.statusBarItem.text = '$(pulse) Quota: No Model Selected';
         } else {
-            const parts = selected.map(m => {
-                const pct = getQuotaPercent(m);
-                return `${quotaIcon(pct)} ${m.label}: ${pct === null ? 'N/A' : pct.toFixed(0) + '%'}`;
+            const parts = selectedGroups.map(g => {
+                return `${quotaIcon(g.pct)} ${g.label}: ${g.pct === null ? 'N/A' : g.pct.toFixed(0) + '%'}`;
             });
 
             // Append context window percentage if active
@@ -105,19 +152,18 @@ export class StatusBarService {
         const md = new vscode.MarkdownString('', true);
         md.appendMarkdown('**Antigravity Quota Models**\n\n---\n\n');
 
-        for (const m of sorted) {
-            if (!m.quotaInfo) continue;
-            const pct = getQuotaPercent(m);
-            const sel = selectedIds.includes(m.modelOrAlias?.model || '') ? ' *(Selected)*' : '';
+        for (const g of groups) {
+            const isSel = (g.id === 'claude' && isClaudeSelected) || (g.id === 'gemini' && isGeminiSelected);
+            const sel = isSel ? ' *(Selected)*' : '';
 
-            const resetDate = m.quotaInfo.resetTime ? new Date(m.quotaInfo.resetTime) : null;
+            const resetDate = g.resetTime ? new Date(g.resetTime) : null;
             const isValid = resetDate && !isNaN(resetDate.getTime());
             const timeStr = isValid
                 ? resetDate.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
                 : 'Unknown';
             const timeLeft = isValid ? `(${formatDurationMs(resetDate.getTime() - Date.now())} left)` : '';
 
-            md.appendMarkdown(`${quotaIcon(pct)} **${m.label}** (${pct === null ? 'N/A' : pct.toFixed(0) + '%'})${sel}\n\n`);
+            md.appendMarkdown(`${quotaIcon(g.pct)} **${g.label}** (${g.pct === null ? 'N/A' : g.pct.toFixed(0) + '%'})${sel}\n\n`);
             md.appendMarkdown(`*Resets:* ${timeStr} ${timeLeft}\n\n---\n\n`);
         }
 

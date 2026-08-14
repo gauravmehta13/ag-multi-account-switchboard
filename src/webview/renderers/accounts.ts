@@ -106,7 +106,7 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
             const pinnedLabel = pinnedModels[a.email];
             const displayModel = pinnedLabel
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                ? (a.models.find((m: any) => m.label === pinnedLabel) || a.bottleneck)
+                ? (a.models.find((m: any) => m.label === pinnedLabel || (pinnedLabel.toLowerCase().includes('claude') && m.label === 'Claude') || (pinnedLabel.toLowerCase().includes('gemini') && m.label === 'Gemini')) || a.bottleneck)
                 : a.bottleneck;
             if (displayModel) {
                 const bnLabel = displayModel.label || shortModelName(displayModel.id);
@@ -143,7 +143,7 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
                 const fCls = fillClass(m.pct);
                 const mTl = timeLeft(m.resetTime);
                 const acctKey = a.email;
-                const isPinned = pinnedModels[acctKey] === m.label;
+                const isPinned = pinnedModels[acctKey] === m.label || (pinnedModels[acctKey]?.toLowerCase().includes('claude') && m.label === 'Claude') || (pinnedModels[acctKey]?.toLowerCase().includes('gemini') && m.label === 'Gemini');
                 const starCls = isPinned ? 'star-btn pinned' : 'star-btn';
                 const starIcon = isPinned ? '\u2605' : '\u2606';
                 const safeModelId = encodeURIComponent(m.label);
