@@ -170,6 +170,7 @@
     "@types/vscode": "^1.80.0",
     "@vscode/vsce": "^3.0.0",
     "esbuild": "^0.28.0",
+    "ovsx": "^1.1.1",
     "typescript": "^5.4.0"
   }
 }
