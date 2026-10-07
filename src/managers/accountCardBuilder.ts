@@ -55,6 +55,20 @@ function resolveLabel(apiKey: string, labelMap: Map<string, string>): string {
 }
 
 /**
+ * Check if a model identifier or label indicates Claude Opus 5.5.
+ * Matches:
+ *  - Labels: "Claude Opus 5.5", "Claude Opus 5.5 (Low)", "(Medium)", "(High)"
+ *  - Slugs: "claude-opus-5-5", "claude-opus-5.5", "claude-opus-5-5-thinking"
+ *  - Enum placeholders: MODEL_PLACEHOLDER_M400, M401, M402
+ */
+export function isOpus55Model(idOrName?: string, label?: string): boolean {
+    const text = `${idOrName || ''} ${label || ''}`.toLowerCase();
+    if (/opus.*5[.-]?5/i.test(text)) return true;
+    if (/model_placeholder_m(400|401|402)\b/i.test(idOrName || '')) return true;
+    return false;
+}
+
+/**
  * Group raw individual models into 2 canonical groups: 'Claude' (which includes Claude & GPT) and 'Gemini'.
  * Only these 2 groups will be visible in the UI.
  */
@@ -76,12 +90,14 @@ export function groupModels(rawModels: ModelCard[]): ModelCard[] {
     if (claudeItems.length > 0) {
         const bottleneck = claudeItems.reduce((min, cur) => cur.pct < min.pct ? cur : min, claudeItems[0]);
         const resetTime = bottleneck.resetTime || claudeItems.find(i => i.resetTime)?.resetTime || '';
+        const hasOpus55 = claudeItems.some(i => i.hasOpus55 || isOpus55Model(i.id, i.label));
         result.push({
             id: 'claude',
             label: 'Claude',
             pct: bottleneck.pct,
             resetTime,
             isLocal: claudeItems[0].isLocal,
+            hasOpus55,
         });
     }
 
@@ -127,8 +143,15 @@ export function buildAccountCards(
 
     if (status) {
         const knownDisplayNames = new Set(Object.values(MODEL_DISPLAY_NAMES));
-        const rawModels = (status.cascadeModelConfigData?.clientModelConfigs || [])
-            .filter((m: any) => m.quotaInfo && knownDisplayNames.has(m.label || shortModelName(m.modelOrAlias?.model)))
+        const rawConfigs = status.cascadeModelConfigData?.clientModelConfigs || [];
+        const rawModels = rawConfigs
+            .filter((m: any) => {
+                if (!m.quotaInfo) return false;
+                const label = m.label || shortModelName(m.modelOrAlias?.model);
+                if (knownDisplayNames.has(label)) return true;
+                const text = `${label} ${m.modelOrAlias?.model || ''}`.toLowerCase();
+                return text.includes('opus') || text.includes('claude') || text.includes('gemini') || text.includes('gpt');
+            })
             .sort((a: any, b: any) => (a.label || '').localeCompare(b.label || ''));
 
         const rawModelCards: ModelCard[] = rawModels.map((m: any) => ({
@@ -139,7 +162,11 @@ export function buildAccountCards(
                 : 0,
             resetTime: m.quotaInfo.resetTime || '',
             isLocal: true,
+            hasOpus55: isOpus55Model(m.modelOrAlias?.model, m.label),
         }));
+
+        const hasOpus55 = rawConfigs.some((m: any) => isOpus55Model(m.modelOrAlias?.model, m.label))
+            || rawModelCards.some(m => isOpus55Model(m.id, m.label));
 
         const models = groupModels(rawModelCards);
         const bottleneckModel = models.length > 0 ? models.reduce((a, b) => a.pct < b.pct ? a : b) : null;
@@ -159,6 +186,7 @@ export function buildAccountCards(
             isActive: !activeEmail || activeEmail === localEmail,
             isTransitioning,
             pendingEmail: isTransitioning ? activeEmailRaw : undefined,
+            hasOpus55,
             models,
             bottleneck: bottleneckModel,
             tierName: userTier.name,
@@ -189,7 +217,11 @@ export function buildAccountCards(
             pct: m.percentage || 0,
             resetTime: m.resetTimeRaw || m.resetTime || '',
             isLocal: false,
+            hasOpus55: isOpus55Model(m.name, m.name),
         }));
+
+        const hasOpus55 = (trackedQuota.models || []).some(m => isOpus55Model(m.name, m.name))
+            || rawModelCards.some(m => isOpus55Model(m.id, m.label));
 
         const models = groupModels(rawModelCards);
         const bottleneckModel = models.length > 0 ? models.reduce((a, b) => a.pct < b.pct ? a : b) : null;
@@ -199,6 +231,7 @@ export function buildAccountCards(
             name: trackedQuota.account.name,
             isActive: !!(activeEmail && activeEmail === trackedEmail),
             trackingId: trackedQuota.account.id,
+            hasOpus55,
             models,
             bottleneck: bottleneckModel,
             tierName: trackedQuota.tierName || trackedQuota.tier || null,

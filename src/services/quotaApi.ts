@@ -78,8 +78,11 @@ export class QuotaApiService {
 
             const cleanId = modelId.split('/').pop()!;
             
-            // Only include models that are explicitly mapped in Antigravity
-            if (!MODEL_DISPLAY_NAMES[cleanId] && !MODEL_DISPLAY_NAMES[modelId]) {
+            // Only include models that are explicitly mapped in Antigravity or belong to Antigravity model families
+            const isKnown = !!(MODEL_DISPLAY_NAMES[cleanId] || MODEL_DISPLAY_NAMES[modelId]);
+            const lowerClean = cleanId.toLowerCase();
+            const isAntigravityFamily = lowerClean.includes('opus') || lowerClean.includes('claude') || lowerClean.includes('sonnet') || lowerClean.includes('haiku') || lowerClean.includes('gemini') || lowerClean.includes('gpt') || /^model_placeholder_m\d+$/i.test(cleanId);
+            if (!isKnown && !isAntigravityFamily) {
                 continue;
             }
 

@@ -63,6 +63,7 @@ export interface ModelCard {
     pct: number;
     resetTime: string;
     isLocal: boolean;
+    hasOpus55?: boolean;
 }
 
 /**
@@ -92,6 +93,8 @@ export interface AccountCard {
     isTransitioning?: boolean;
     /** Target email during transition (the email being switched TO) */
     pendingEmail?: string;
+    /** True if this account supports Claude Opus 5.5 */
+    hasOpus55?: boolean;
 }
 
 /** Unified state object passed to viewProvider.updateData() */

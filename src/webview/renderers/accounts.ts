@@ -81,6 +81,9 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
             ? '<span class="transition-tag">→ ' + a.pendingEmail + '</span>'
             : '';
         const tierBadge = a.tierName ? '<span class="tier-tag">' + shortTierName(a.tierName) + '</span>' : '';
+        const opusBadge = a.hasOpus55
+            ? '<span class="opus-tag" title="Account supports Claude Opus 5.5"><span class="sparkle">✦</span> Opus 5.5</span>'
+            : '';
 
         // Credits as pill badges
         let creditsLine = '';
@@ -127,7 +130,7 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
         html += '<div class="acct-hdr" data-action="toggle-open">';
         html += '<div class="acct-dot ' + dotCls + '"></div>';
         html += '<div class="acct-info">';
-        html += '<div class="acct-email">' + a.email + ' ' + activeBadge + ' ' + tierBadge + transitionBadge + '</div>';
+        html += '<div class="acct-email">' + a.email + ' ' + activeBadge + ' ' + tierBadge + ' ' + opusBadge + transitionBadge + '</div>';
         html += subBlock;
         html += creditsLine;
         html += '</div>';
@@ -147,12 +150,15 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
                 const starCls = isPinned ? 'star-btn pinned' : 'star-btn';
                 const starIcon = isPinned ? '\u2605' : '\u2606';
                 const safeModelId = encodeURIComponent(m.label);
+                const opusChip = (m.hasOpus55 || (m.id === 'claude' && a.hasOpus55))
+                    ? '<span class="opus-chip-sm" title="Supports Claude Opus 5.5">Opus 5.5</span>'
+                    : '';
                 html += '<div class="m-item">';
                 html += '<button class="' + starCls + '" title="Pin to collapsed view" data-action="pin-model" data-account-key="' + acctKey + '" data-model-id="' + safeModelId + '">'
                     + starIcon + '</button>';
                 html += '<div class="m-content">';
                 html += '<div class="m-top">';
-                html += '<span class="m-label">' + m.label + '</span>';
+                html += '<span class="m-label">' + m.label + ' ' + opusChip + '</span>';
                 html += '<div class="m-right">';
                 html += '<span class="m-pct">' + m.pct + '%</span>';
                 if (m.isLocal) {

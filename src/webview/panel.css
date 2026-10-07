@@ -260,6 +260,58 @@ body {
     line-height: 1.4;
 }
 
+.opus-tag {
+    font-size: 9.5px;
+    font-weight: 600;
+    color: #ff9e64;
+    background: linear-gradient(135deg, rgba(255, 158, 100, 0.18) 0%, rgba(245, 158, 11, 0.12) 100%);
+    border: 1px solid rgba(255, 158, 100, 0.35);
+    box-shadow: 0 1px 3px rgba(255, 158, 100, 0.1);
+    padding: 1px 6px;
+    border-radius: 3px;
+    letter-spacing: .3px;
+    flex-shrink: 0;
+    line-height: 1.4;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    cursor: default;
+    transition: all 0.2s ease;
+}
+
+.opus-tag:hover {
+    background: linear-gradient(135deg, rgba(255, 158, 100, 0.28) 0%, rgba(245, 158, 11, 0.2) 100%);
+    border-color: rgba(255, 158, 100, 0.6);
+    box-shadow: 0 0 8px rgba(255, 158, 100, 0.25);
+    transform: translateY(-0.5px);
+}
+
+.opus-tag .sparkle {
+    font-size: 8px;
+    color: #ffb86c;
+    animation: opus-sparkle 2.5s ease-in-out infinite;
+}
+
+@keyframes opus-sparkle {
+    0%, 100% { opacity: 0.85; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.2); }
+}
+
+.opus-chip-sm {
+    font-size: 9px;
+    font-weight: 600;
+    color: #ff9e64;
+    background: rgba(255, 158, 100, 0.12);
+    border: 1px solid rgba(255, 158, 100, 0.3);
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 5px;
+    vertical-align: middle;
+    letter-spacing: .2px;
+    display: inline-block;
+    line-height: 1.3;
+}
+
 .transition-tag {
     font-size: 10px;
     font-weight: 500;

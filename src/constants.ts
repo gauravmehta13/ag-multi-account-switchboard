@@ -31,11 +31,33 @@ export const LOAD_CODE_ASSIST_ENDPOINTS = [
 // Optional display name overrides for known model slugs.
 // Models NOT in this map are still shown — their ID is auto-humanized.
 export const MODEL_DISPLAY_NAMES: Record<string, string> = {
+    'claude-opus-5-5': 'Claude Opus 5.5',
+    'claude-opus-5-5-thinking': 'Claude Opus 5.5 (Thinking)',
+    'claude-opus-5.5': 'Claude Opus 5.5',
+    'claude-opus-5-5-low': 'Claude Opus 5.5 (Low)',
+    'claude-opus-5-5-medium': 'Claude Opus 5.5 (Medium)',
+    'claude-opus-5-5-high': 'Claude Opus 5.5 (High)',
+    'MODEL_PLACEHOLDER_M400': 'Claude Opus 5.5 (Low)',
+    'MODEL_PLACEHOLDER_M401': 'Claude Opus 5.5 (Medium)',
+    'MODEL_PLACEHOLDER_M402': 'Claude Opus 5.5 (High)',
+    'claude-sonnet-5-5': 'Claude Sonnet 5.5',
+    'claude-sonnet-5-5-thinking': 'Claude Sonnet 5.5 (Thinking)',
+    'claude-sonnet-5.5': 'Claude Sonnet 5.5',
+    'claude-sonnet-5-5-low': 'Claude Sonnet 5.5 (Low)',
+    'claude-sonnet-5-5-medium': 'Claude Sonnet 5.5 (Medium)',
+    'claude-sonnet-5-5-high': 'Claude Sonnet 5.5 (High)',
+    'MODEL_PLACEHOLDER_M403': 'Claude Sonnet 5.5 (Low)',
+    'MODEL_PLACEHOLDER_M404': 'Claude Sonnet 5.5 (Medium)',
+    'MODEL_PLACEHOLDER_M405': 'Claude Sonnet 5.5 (High)',
     'claude-opus-4-6-thinking': 'Claude Opus 4.6 (Thinking)',
+    'claude-opus-4-6': 'Claude Opus 4.6',
     'claude-sonnet-4-6': 'Claude Sonnet 4.6',
     'gemini-3-flash': 'Gemini 3 Flash',
     'gemini-3.1-pro-high': 'Gemini 3.1 Pro (High)',
     'gemini-3.1-pro-low': 'Gemini 3.1 Pro (Low)',
+    'gemini-3.6-flash-high': 'Gemini 3.6 Flash (High)',
+    'gemini-3.7-flash-high': 'Gemini 3.7 Flash (High)',
+    'gemini-3.8-flash-high': 'Gemini 3.8 Flash (High)',
     'gpt-oss-120b-medium': 'GPT-OSS 120B (Medium)',
 };
 
