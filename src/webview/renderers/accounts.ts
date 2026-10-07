@@ -4,7 +4,7 @@
  * is done in quotaManager.buildAccountCards() on the extension host side.
  */
 
-import { dotClass, fillClass, timeLeft, shortModelName, shortTierName, fmtNum } from '../../shared/helpers';
+import { dotClass, fillClass, timeLeft, shortModelName, shortTierName, fmtNum, escHtml } from '../../shared/helpers';
 
 // SVG icon constants for tracked account action buttons
 const SWITCH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="M16 21l4-4-4-4"/><path d="M20 17H4"/></svg>';
@@ -41,8 +41,10 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
         const tl = timeLeft(a.resetTime);
         if (tl && tl !== 'Reset' && (!nearestReset || tl < nearestReset)) nearestReset = tl;
     }
-    label.textContent = cards.length + ' account' + (cards.length !== 1 ? 's' : '')
+    const summaryText = cards.length + ' account' + (cards.length !== 1 ? 's' : '')
         + (nearestReset ? ' \u00b7 ' + nearestReset + ' reset' : '');
+    label.textContent = summaryText;
+    label.title = summaryText;
 
     // ─── Preserve open states by EMAIL (stable across re-renders) ───
     const openStates: Record<string, boolean> = {};
@@ -78,9 +80,9 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
 
         const activeBadge = a.isActive ? '<span class="active-tag">ACTIVE</span>' : '';
         const transitionBadge = a.isTransitioning && a.pendingEmail
-            ? '<span class="transition-tag">→ ' + a.pendingEmail + '</span>'
+            ? '<span class="transition-tag" title="Switching to ' + escHtml(a.pendingEmail) + '">→ ' + escHtml(a.pendingEmail) + '</span>'
             : '';
-        const tierBadge = a.tierName ? '<span class="tier-tag">' + shortTierName(a.tierName) + '</span>' : '';
+        const tierBadge = a.tierName ? '<span class="tier-tag">' + escHtml(shortTierName(a.tierName)) + '</span>' : '';
         const opusBadge = a.hasOpus55
             ? '<span class="opus-tag" title="Account supports Claude Opus 5.5"><span class="sparkle">✦</span> Opus 5.5</span>'
             : '';
@@ -89,14 +91,14 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
         let creditsLine = '';
         if (a.aiCredits != null || a.promptCredits != null || a.flowCredits != null) {
             let chips = '';
-            if (a.aiCredits != null) chips += '<span class="cr-chip"><span class="cr-icon">CR</span>' + fmtNum(a.aiCredits) + '</span>';
+            if (a.aiCredits != null) chips += '<span class="cr-chip" title="Google One AI Credits: ' + fmtNum(a.aiCredits) + '"><span class="cr-icon">CR</span>' + fmtNum(a.aiCredits) + '</span>';
             if (a.promptCredits != null) {
                 const pmx = a.promptCreditsMax ? '/' + fmtNum(a.promptCreditsMax) : '';
-                chips += '<span class="cr-chip cr-prompt">P ' + fmtNum(a.promptCredits) + pmx + '</span>';
+                chips += '<span class="cr-chip cr-prompt" title="Prompt Credits: ' + fmtNum(a.promptCredits) + pmx + '">P ' + fmtNum(a.promptCredits) + pmx + '</span>';
             }
             if (a.flowCredits != null) {
                 const fmx = a.flowCreditsMax ? '/' + fmtNum(a.flowCreditsMax) : '';
-                chips += '<span class="cr-chip cr-flow">F ' + fmtNum(a.flowCredits) + fmx + '</span>';
+                chips += '<span class="cr-chip cr-flow" title="Flow Credits: ' + fmtNum(a.flowCredits) + fmx + '">F ' + fmtNum(a.flowCredits) + fmx + '</span>';
             }
             creditsLine = '<div class="acct-credits">' + chips + '</div>';
         }
@@ -104,7 +106,8 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
         // Pinned or bottleneck for collapsed view
         let subBlock = '';
         if (a.isError) {
-            subBlock = '<div class="acct-sub"><span style="color:var(--error)">\u26a0 ' + (a.errorMessage || 'Error') + '</span></div>';
+            const errStr = a.errorMessage || 'Error';
+            subBlock = '<div class="acct-sub" title="' + escHtml(errStr) + '"><span style="color:var(--error)">\u26a0 ' + escHtml(errStr) + '</span></div>';
         } else {
             const pinnedLabel = pinnedModels[a.email];
             const displayModel = pinnedLabel
@@ -115,8 +118,9 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
                 const bnLabel = displayModel.label || shortModelName(displayModel.id);
                 const pctCls = fillClass(displayModel.pct);
                 const tl = timeLeft(displayModel.resetTime);
-                subBlock = '<div class="acct-sub">'
-                    + '<span class="bn-model">' + bnLabel + '</span> \u00b7 '
+                const fullInfo = bnLabel + ' · ' + displayModel.pct + '%' + (tl ? ' · ' + tl : '');
+                subBlock = '<div class="acct-sub" title="' + escHtml(fullInfo) + '">'
+                    + '<span class="bn-model">' + escHtml(bnLabel) + '</span> \u00b7 '
                     + '<span class="bn-pct ' + pctCls + '">' + displayModel.pct + '%</span>'
                     + (tl ? ' <span class="bn-sep">\u00b7</span> ' + tl : '')
                     + '</div>';
@@ -126,11 +130,18 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
         }
 
         const activeCls = a.isActive ? ' acct-active' : '';
-        html += '<div class="acct' + activeCls + openCls + '" data-email="' + a.email + '">';
+        const safeEmail = escHtml(a.email);
+        html += '<div class="acct' + activeCls + openCls + '" data-email="' + safeEmail + '">';
         html += '<div class="acct-hdr" data-action="toggle-open">';
         html += '<div class="acct-dot ' + dotCls + '"></div>';
         html += '<div class="acct-info">';
-        html += '<div class="acct-email">' + a.email + ' ' + activeBadge + ' ' + tierBadge + ' ' + opusBadge + transitionBadge + '</div>';
+        html += '<div class="acct-email">';
+        html += '<span class="acct-email-text" title="' + safeEmail + '">' + safeEmail + '</span>';
+        if (activeBadge) html += activeBadge;
+        if (tierBadge) html += tierBadge;
+        if (opusBadge) html += opusBadge;
+        if (transitionBadge) html += transitionBadge;
+        html += '</div>';
         html += subBlock;
         html += creditsLine;
         html += '</div>';
@@ -158,7 +169,7 @@ export function renderAll(cards: any[], pinnedModels: Record<string, string>): v
                     + starIcon + '</button>';
                 html += '<div class="m-content">';
                 html += '<div class="m-top">';
-                html += '<span class="m-label">' + m.label + ' ' + opusChip + '</span>';
+                html += '<span class="m-label" title="' + escHtml(m.label) + '">' + escHtml(m.label) + ' ' + opusChip + '</span>';
                 html += '<div class="m-right">';
                 html += '<span class="m-pct">' + m.pct + '%</span>';
                 if (m.isLocal) {
