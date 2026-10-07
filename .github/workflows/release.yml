@@ -37,6 +37,7 @@ jobs:
         run: echo "file=$(ls *.vsix | head -n 1)" >> "$GITHUB_OUTPUT"
 
       - name: Upload VSIX to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.vsix.outputs.file }}
