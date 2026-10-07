@@ -2,6 +2,11 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
+## [3.4.0] — 2026-10-07
+
+### Added
+- **Claude Opus 5.5 Support**: Added badges and quota chip indicators for accounts supporting the new Claude Opus models.
+
 ## [3.3.4] — 2026-08-21
 
 ### Fixed
