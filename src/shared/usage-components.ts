@@ -4,7 +4,7 @@
  * Used by: webview/renderers/usage.ts (sidebar) & providers/usageStatsPanel.ts (detail panel)
  */
 
-import { fmtNum, fmtBig, fmtShortDate, escHtml } from './helpers';
+import { fmtNum, fmtBig, fmtShortDate, escHtml, isoDay } from './helpers';
 import { DailyBucket, HourlyBucket, ModelBucket, CascadeBucket, MonthlyBucket, MonthlyModelEntry, ProviderBucket, WeekdayBucket } from '../types';
 import {
     CASCADE_LIST_LIMIT, CASCADE_TITLE_MAX_LEN,
@@ -121,6 +121,7 @@ export function renderHourlyHeatmap(hourly: HourlyBucket[], costPerToken: number
 
 const DAY_LABELS = ['Mon', '', 'Wed', '', 'Fri', '', ''];
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DAY_INITIALS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];  // Date.getDay() order
 
 /**
  * @param large — if true, uses gh-grid-lg class for bigger cells (detail panel)
@@ -129,7 +130,7 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Se
  */
 export function renderDailyGrid(daily: DailyBucket[], large: boolean = false, year?: number, costPerToken: number = 0): string {
     const selectedYear = year ?? new Date().getFullYear();
-    const today = new Date().toISOString().slice(0, 10);
+    const today = isoDay(new Date());
 
     // Build date → tokens lookup
     const dateMap = new Map<string, { total: number; calls: number }>();
@@ -164,7 +165,10 @@ export function renderDailyGrid(daily: DailyBucket[], large: boolean = false, ye
     let peakDay = { date: '', total: 0, calls: 0 };
 
     while (cursor <= gridEnd) {
-        const iso = cursor.toISOString().slice(0, 10);
+        // The cursor is built from local dates (gridStart was created from getDate() math),
+        // so it must be read back as a local date — toISOString re-interprets local midnight
+        // as the previous day in UTC for positive offsets, shifting every cell backward by one.
+        const iso = isoDay(cursor);
         const data = dateMap.get(iso);
         const total = data?.total || 0;
         const calls = data?.calls || 0;
@@ -196,28 +200,105 @@ export function renderDailyGrid(daily: DailyBucket[], large: boolean = false, ye
 
     for (const week of weeks) {
         html += '<div class="gh-week-col">';
-        for (const cell of week) {
-            const level = cell.future ? 0
-                : cell.total === 0 ? 0
-                : (cell.total / maxTokens) < 0.15 ? 1
-                : (cell.total / maxTokens) < 0.35 ? 2
-                : (cell.total / maxTokens) < 0.65 ? 3 : 4;
-            const costStr = (costPerToken > 0 && cell.total > 0) ? '&#10;~' + fmtDollar(cell.total * costPerToken) : '';
-            const title = cell.future ? fmtShortDate(cell.date)
-                : fmtShortDate(cell.date) + '&#10;' + (cell.total > 0 ? fmtBig(cell.total) + ' tokens&#10;' + fmtNum(cell.calls) + ' calls' + costStr : 'No activity');
-            html += '<div class="gh-cell gh-lvl-' + level + '" data-tip="' + title + '"></div>';
-        }
+        for (const cell of week) html += gridCell(cell, maxTokens, costPerToken);
         html += '</div>';
     }
     html += '</div>';
 
-    // Legend + Peak
-    html += '<div class="gh-footer">';
+    html += gridFooter(peakDay);
+    html += '</div>';
+    return html;
+}
+
+/** One heatmap square — shared by the year grid and the day strip. */
+function gridCell(
+    cell: { date: string; total: number; calls: number; future?: boolean },
+    maxTokens: number,
+    costPerToken: number,
+): string {
+    const level = cell.future || cell.total === 0 ? 0
+        : (cell.total / maxTokens) < 0.15 ? 1
+        : (cell.total / maxTokens) < 0.35 ? 2
+        : (cell.total / maxTokens) < 0.65 ? 3 : 4;
+    const costStr = (costPerToken > 0 && cell.total > 0) ? '&#10;~' + fmtDollar(cell.total * costPerToken) : '';
+    const title = cell.future ? fmtShortDate(cell.date)
+        : fmtShortDate(cell.date) + '&#10;' + (cell.total > 0 ? fmtBig(cell.total) + ' tokens&#10;' + fmtNum(cell.calls) + ' calls' + costStr : 'No activity');
+    return '<div class="gh-cell gh-lvl-' + level + '" data-tip="' + title + '"></div>';
+}
+
+/** Legend + peak-day line shared by the year grid and the day strip. */
+function gridFooter(peakDay: { date: string; total: number }): string {
+    let html = '<div class="gh-footer">';
     html += '<span class="gh-legend">Less <span class="gh-cell gh-lvl-0 gh-sm"></span><span class="gh-cell gh-lvl-1 gh-sm"></span><span class="gh-cell gh-lvl-2 gh-sm"></span><span class="gh-cell gh-lvl-3 gh-sm"></span><span class="gh-cell gh-lvl-4 gh-sm"></span> More</span>';
     if (peakDay.total > 0) {
         html += '<span class="gh-peak">Peak: <strong>' + fmtShortDate(peakDay.date) + '</strong> (' + fmtBig(peakDay.total) + ')</span>';
     }
     html += '</div>';
+    return html;
+}
+
+/**
+ * Day strip — one square per day across exactly the selected period.
+ *
+ * The year grid is the wrong shape for a short range: a 7d filter lights one
+ * column and leaves ~52 empty ones. Here every square is inside the window, and
+ * the colour scale is relative to the window's own peak, so a quiet week still
+ * shows contrast instead of washing out against an all-time maximum.
+ */
+export function renderDayStrip(
+    daily: DailyBucket[],
+    large: boolean,
+    window: { from: string; to: string },
+    costPerToken: number = 0,
+): string {
+    const today = isoDay(new Date());
+    const dateMap = new Map<string, { total: number; calls: number }>();
+    for (const d of daily) dateMap.set(d.date, { total: usageTotal(d), calls: d.calls });
+
+    type Cell = { date: string; total: number; calls: number; future: boolean };
+    const days: Cell[] = [];
+    const cursor = new Date(window.from + 'T00:00:00');
+    const end = new Date(window.to + 'T00:00:00');
+    let peakDay = { date: '', total: 0 };
+
+    while (cursor <= end && days.length < 400) {
+        const iso = isoDay(cursor);
+        const data = dateMap.get(iso);
+        const total = data?.total || 0;
+        days.push({ date: iso, total, calls: data?.calls || 0, future: iso > today });
+        if (total > peakDay.total) peakDay = { date: iso, total };
+        cursor.setDate(cursor.getDate() + 1);
+    }
+
+    const maxTokens = Math.max(...days.map(d => d.total), 1);
+    // Past ~10 squares there is no room to label every one; tick weekly instead.
+    const labelEvery = days.length > 10;
+
+    let html = '<div class="gh-strip-wrap' + (large ? ' gh-strip-lg' : '') + '">';
+    html += '<div class="gh-strip">';
+    // Tracks the last *labelled* month, not the last cell's — otherwise a silent
+    // cell swallows the rollover and the strip never names the new month.
+    let lastLabeledMonth = -1;
+    for (let i = 0; i < days.length; i++) {
+        const cell = days[i];
+        const dt = new Date(cell.date + 'T00:00:00');
+
+        let label = '';
+        if (!labelEvery || i % 7 === 0 || i === days.length - 1) {
+            label = dt.getMonth() !== lastLabeledMonth
+                ? MONTH_NAMES[dt.getMonth()] + ' ' + dt.getDate()
+                : (labelEvery ? String(dt.getDate()) : DAY_INITIALS[dt.getDay()] + ' ' + dt.getDate());
+            lastLabeledMonth = dt.getMonth();
+        }
+
+        html += '<div class="gh-strip-day">';
+        html += gridCell(cell, maxTokens, costPerToken);
+        html += '<span class="gh-strip-label">' + label + '</span>';
+        html += '</div>';
+    }
+    html += '</div>';
+
+    html += gridFooter(peakDay);
     html += '</div>';
     return html;
 }
@@ -368,10 +449,13 @@ export function getPricing(): Record<string, PricingEntry> {
     return { ...pricing };
 }
 
-export function matchPricing(displayName: string): PricingEntry {
+export function matchPricing(displayName: string, pricingKey?: string): PricingEntry {
     // 1. External resolver (LiteLLM dynamic catalog — highest priority after settings override)
     if (externalResolver) {
-        const external = externalResolver(displayName);
+        // The id first — the catalog is keyed by id, and the display label
+        // matches nothing. Falling back to the label costs one failed lookup
+        // and keeps older cached buckets, which carry no id, working.
+        const external = (pricingKey && externalResolver(pricingKey)) || externalResolver(displayName);
         if (external) return external;
     }
 
@@ -406,7 +490,11 @@ export function calculateTotalCost(models: ModelBucket[]): number {
     if (!models || models.length === 0) return 0;
     let total = 0;
     for (const m of models) {
-        const p = matchPricing(m.displayName);
+        // An unrecognised model has no rate. Pricing it at zero would understate
+        // cost silently. The prefix is a literal, not imported from enumMap, because
+        // this file is bundled for the browser webview while enumMap is extension-host only.
+        if (m.displayName && m.displayName.startsWith('MODEL_UNKNOWN_')) continue;
+        const p = matchPricing(m.displayName, m.rawModel);
         total += (m.input / 1e6) * p.input
             + ((m.cache || 0) / 1e6) * p.cache
             + ((m.cacheWrite || 0) / 1e6) * (p.input * 1.25)
@@ -455,7 +543,13 @@ export function renderCompactModelBreakdown(models: ModelBucket[], totalTokens: 
 /** Estimate cost for a single month bucket using per-model pricing */
 function estimateTopModelCosts(m: MonthlyBucket): MonthlyModelEntry[] {
     return m.topModels.map(tm => {
-        const p = matchPricing(tm.displayName);
+        // An unrecognised model has no rate. Pricing it at zero would understate
+        // cost silently. The prefix is a literal, not imported from enumMap, because
+        // this file is bundled for the browser webview while enumMap is extension-host only.
+        if (tm.displayName && tm.displayName.startsWith('MODEL_UNKNOWN_')) {
+            return { ...tm, cost: 0 };
+        }
+        const p = matchPricing(tm.displayName, tm.rawModel);
         const cost = (tm.inp * p.input + tm.cache * p.cache + (tm.cacheWrite || 0) * (p.input * 1.25) + tm.out * p.output + tm.reas * p.reasoning) / 1_000_000;
         return { ...tm, cost };
     });
@@ -637,19 +731,24 @@ export function renderProviderBreakdown(providers: ProviderBucket[], totalTokens
 export function renderWeekdayChart(weekday: WeekdayBucket[]): string {
     if (!weekday || weekday.length === 0) return '<div class="deep-empty">No data</div>';
 
-    const maxCalls = Math.max(...weekday.map(w => w.calls), 1);
-    const peakDay = weekday.reduce((a, b) => b.calls > a.calls ? b : a);
+    // FORK CHANGE: plot token usage (input+output), not call count. Upstream plotted
+    // `w.calls`, which is dominated by long agentic sessions firing many small calls (one
+    // outlier day spikes its weekday). Cache reads are excluded on purpose — they are
+    // repeated context re-reads that balloon on long sessions and distort the pattern.
+    const tok = (w: WeekdayBucket) => w.input + w.output;
+    const maxTok = Math.max(...weekday.map(tok), 1);
+    const peakDay = weekday.reduce((a, b) => tok(b) > tok(a) ? b : a);
     const BAR_H = 80;
 
     let html = '<div class="weekday-chart">';
     for (const w of weekday) {
-        const h = (w.calls / maxCalls) * BAR_H;
-        const total = w.input + w.output + w.cache;
+        const v = tok(w);
+        const h = (v / maxTok) * BAR_H;
         const isPeak = w.day === peakDay.day;
         const cls = 'weekday-col' + (isPeak ? ' weekday-peak' : '');
 
         html += `<div class="${cls}">`;
-        html += `<div class="weekday-val">${fmtNum(w.calls)}</div>`;
+        html += `<div class="weekday-val">${fmtBig(v)}</div>`;
         html += `<div class="weekday-bar-wrap" style="height:${BAR_H}px">`;
         html += `<div class="weekday-bar" style="height:${h.toFixed(1)}px"></div>`;
         html += '</div>';
@@ -658,11 +757,11 @@ export function renderWeekdayChart(weekday: WeekdayBucket[]): string {
     }
     html += '</div>';
 
-    // Summary line
-    const weekdayCalls = weekday.filter(w => w.day < 5).reduce((s, w) => s + w.calls, 0);
-    const weekendCalls = weekday.filter(w => w.day >= 5).reduce((s, w) => s + w.calls, 0);
-    const total = weekdayCalls + weekendCalls;
-    const weekdayPct = total > 0 ? Math.round(weekdayCalls / total * 100) : 0;
+    // Summary line (token share, not calls)
+    const weekdayTok = weekday.filter(w => w.day < 5).reduce((s, w) => s + tok(w), 0);
+    const weekendTok = weekday.filter(w => w.day >= 5).reduce((s, w) => s + tok(w), 0);
+    const total = weekdayTok + weekendTok;
+    const weekdayPct = total > 0 ? Math.round(weekdayTok / total * 100) : 0;
     html += `<div class="weekday-summary">Weekday ${weekdayPct}% · Weekend ${100 - weekdayPct}% · Peak: <strong>${peakDay.label}</strong></div>`;
 
     return html;
@@ -745,7 +844,11 @@ export function renderCostEstimate(models: ModelBucket[]): string {
     let grandTotal = 0;
 
     for (const m of models) {
-        const p = matchPricing(m.displayName);
+        // An unrecognised model has no rate. Pricing it at zero would understate
+        // cost silently. The prefix is a literal, not imported from enumMap, because
+        // this file is bundled for the browser webview while enumMap is extension-host only.
+        if (m.displayName && m.displayName.startsWith('MODEL_UNKNOWN_')) continue;
+        const p = matchPricing(m.displayName, m.rawModel);
         const inputCost    = (m.input / 1e6) * p.input;
         const cacheCost    = ((m.cache || 0) / 1e6) * p.cache;
         const outputCost   = (m.output / 1e6) * p.output;
@@ -806,4 +909,102 @@ export function rangeLabel(state: string): string {
         case 'last-month': return 'Last Month';
         default:           return 'All Time';
     }
+}
+
+// ═══════════════════════════════════════════
+//  Honest Empty State
+// ═══════════════════════════════════════════
+
+/**
+ * A range with no calls renders as an explicit statement, never a wall of
+ * zeros. A silent zero is indistinguishable from a broken tool — that is
+ * exactly how the store-blindness bug presented for four days.
+ */
+export function renderEmptyRange(lastActivityIso: string | null, rangeLabelText: string): string {
+    let html = '<div class="usage-empty-range">';
+    html += `<div class="usage-empty-title">No activity in ${escHtml(rangeLabelText)}</div>`;
+    html += lastActivityIso
+        ? `<div class="usage-empty-sub">Last session ${fmtShortDate(lastActivityIso.slice(0, 10))}</div>`
+        : '<div class="usage-empty-sub">No usage recorded yet</div>';
+    html += '</div>';
+    return html;
+}
+
+// ═══════════════════════════════════════════
+//  Data Health Card
+// ═══════════════════════════════════════════
+
+export type UsageHealth = {
+    source: 'store' | 'server';
+    conversations: number;
+    unreadable: number;
+    unknownModels: string[];
+    /**
+     * gen_metadata rows only (the canonical accounting table) that were read
+     * but produced no entry — e.g. a cancelled streaming request, which
+     * legitimately carries no usage. Does NOT cover steps rows: most steps
+     * are not model calls at all, so a combined count would be dominated by
+     * that normal noise rather than signal a regression (see
+     * readGenMetadata's doc comment). Nothing else distinguishes the normal
+     * case from a decode regression silently dropping rows; both are simply
+     * absent entries from outside. The card's label names this scope
+     * explicitly — do not relabel it as an unqualified total.
+     */
+    skippedRows: number;
+    verification: { compared: number; diverged: number; at: string } | null;
+    countingChangedAt: string | null;
+};
+
+/**
+ * Says plainly where numbers came from and what would make them wrong.
+ *
+ * The cross-check line has THREE possible states, not two:
+ *   - verification is null        -> the verifier has not run; no line at all.
+ *   - compared is 0                -> it ran, but every sampled conversation was
+ *                                     one the language server could no longer
+ *                                     serve — the normal condition this whole
+ *                                     plan exists to work around. Rendering this
+ *                                     as "clean" would manufacture exactly the
+ *                                     false confidence the verifier exists to
+ *                                     prevent, so it says "not verified" instead.
+ *   - compared > 0                 -> a real comparison happened; only this case
+ *                                     may say "clean".
+ */
+export function renderHealthCard(h: UsageHealth): string {
+    const rows: string[] = [];
+    rows.push(`<div class="uh-row"><span>Source</span><span>${h.source === 'store' ? 'conversation store' : 'language server (legacy)'}</span></div>`);
+    rows.push(`<div class="uh-row"><span>Conversations read</span><span>${fmtNum(h.conversations)}</span></div>`);
+    if (h.unreadable > 0) {
+        rows.push(`<div class="uh-row uh-warn"><span>Unreadable</span><span>${fmtNum(h.unreadable)} — will retry</span></div>`);
+    }
+    if (h.unknownModels.length > 0) {
+        rows.push(`<div class="uh-row uh-warn"><span>Unrecognised models</span><span>${h.unknownModels.length} — excluded from cost</span></div>`);
+    }
+    if (h.skippedRows > 0) {
+        // Labelled "metadata" explicitly: this counts gen_metadata rows only
+        // (the canonical accounting table), not steps rows — see
+        // readGenMetadata's doc comment for why. A reader relying on this as
+        // a trust signal needs to know its scope, not just its value.
+        rows.push(`<div class="uh-row"><span>Metadata rows skipped</span><span>${fmtNum(h.skippedRows)} — read, produced no entry</span></div>`);
+    }
+    if (h.verification) {
+        const v = h.verification;
+        // Labelled "Token counts", not "Cross-check": the verifier checks token
+        // counts against the language server, not dollar rates. This card sits
+        // directly beneath an estimated-cost figure that is itself ~95% keyword
+        // guesswork on real data (most models resolve to a Placeholder M<n> with
+        // no catalogue entry) — an unqualified "Cross-check: clean" reads as
+        // vouching for the money, which this row never checked.
+        if (v.compared === 0) {
+            rows.push(`<div class="uh-row"><span>Token counts</span><span>not verified this run</span></div>`);
+        } else if (v.diverged === 0) {
+            rows.push(`<div class="uh-row"><span>Token counts</span><span>clean across ${fmtNum(v.compared)} calls</span></div>`);
+        } else {
+            rows.push(`<div class="uh-row uh-warn"><span>Token counts</span><span>${fmtNum(v.diverged)} divergences of ${fmtNum(v.compared)}</span></div>`);
+        }
+    }
+    if (h.countingChangedAt) {
+        rows.push(`<div class="uh-note">Counting changed on ${fmtShortDate(h.countingChangedAt)}: recovered sessions the language server could not see, sub-agent runs, local-time day bucketing (previously UTC), global deduplication, and live pricing that had silently never applied are all reflected now. Past figures have been restated — this is not only a change going forward.</div>`);
+    }
+    return `<div class="up-card up-bento-full"><div class="up-card-hdr">Data health</div>${rows.join('')}</div>`;
 }

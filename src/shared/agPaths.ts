@@ -64,8 +64,32 @@ export const BRAIN_DIRS = resolveAllExistingDirs(buildDotGeminiSubdirs('brain'))
 /** All candidate conversation directories (IDE and CLI) */
 export const CONVERSATIONS_DIRS = resolveAllExistingDirs(buildDotGeminiSubdirs('conversations'));
 
-/** Directory containing conversation .pb protobuf files */
+/** Directory containing conversation SQLite databases */
 export const CONVERSATIONS_DIR = CONVERSATIONS_DIRS[0];
+
+/** Install roots that can all be pointed at one conversation directory. */
+const INSTALL_ROOTS = ['antigravity', 'antigravity-ide', 'antigravity-cli'];
+
+/**
+ * True when the conversation directory is the same physical directory that
+ * another install root also uses. Compared by realpath, so a symlink, a bind
+ * mount and a duplicate literal path all give the same answer.
+ *
+ * Callers use this to decide whether the sidebar index can be compared against
+ * the disk at all: when the command-line client and the IDE share a directory,
+ * the index legitimately lists only a subset and any diff is meaningless.
+ */
+export function isSharedConversationStore(conversationsDir: string = CONVERSATIONS_DIR): boolean {
+    let target: string;
+    try { target = fs.realpathSync(conversationsDir); } catch { return false; }
+
+    let matches = 0;
+    for (const name of INSTALL_ROOTS) {
+        const candidate = path.join(os.homedir(), '.gemini', name, 'conversations');
+        try { if (fs.realpathSync(candidate) === target) matches++; } catch { /* absent root */ }
+    }
+    return matches > 1;
+}
 
 /** Directory containing conversation brain data (transcripts, artifacts) */
 export const BRAIN_DIR = BRAIN_DIRS[0];
@@ -111,7 +135,13 @@ export const LS_PROCESS_GREP = isMac
  * Tried in order: vscode.env.appRoot (injected at runtime), then platform defaults.
  */
 const AG_APP_ROOT_CANDIDATES: string[] = isMac
-    ? AG_APP_BUNDLE_NAMES.map(appName => `/Applications/${appName}/Contents/Resources/app`)
+    ? [
+        // The IDE build ships under its own name; the plain one may not exist, or
+        // may exist without the native module. Both are listed because either can
+        // be the installed product, and getSqlite3Module tries them in order.
+        '/Applications/Antigravity IDE.app/Contents/Resources/app',
+        '/Applications/Antigravity.app/Contents/Resources/app',
+      ]
     : isLinux
         ? [
             '/opt/antigravity/resources/app',

@@ -1,3 +1,5 @@
+import type * as vscode from 'vscode';
+
 // Antigravity's own OAuth credentials (public, open-source)
 export const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
 export const CLIENT_SECRET = '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';
@@ -83,9 +85,14 @@ export {
 /** gRPC service path for all Language Server endpoints — SSOT */
 export const LS_SERVICE_PATH = '/exa.language_server_pb.LanguageServerService';
 
-
-
-import * as vscode from 'vscode';
+const vscodeRuntime = (() => {
+    try {
+        // @ts-ignore — dynamic require for self-test compatibility
+        return require('vscode');
+    } catch {
+        return null;
+    }
+})();
 
 // Platform-aware paths — re-exported from shared SSOT (vscode-free)
 export { isMac, isLinux, isWindows, STATE_DB_PATH, LS_CERT_PATHS, LS_PROCESS_GREP } from './shared/agPaths';
@@ -107,8 +114,12 @@ export function isDiagEnabled(): boolean {
     const now = Date.now();
     if (_diagCached !== null && now - _diagCacheTs < DIAG_CACHE_TTL_MS) return _diagCached;
     try {
-        _diagCached = vscode.workspace.getConfiguration('ag-switchboard')
-            .get<boolean>('diagnosticMode', false);
+        if (vscodeRuntime) {
+            _diagCached = (vscodeRuntime as typeof vscode).workspace.getConfiguration('ag-switchboard')
+                .get<boolean>('diagnosticMode', false);
+        } else {
+            _diagCached = false;
+        }
     } catch { /* expected: env parse failure — use fallback */
         _diagCached = false;
     }

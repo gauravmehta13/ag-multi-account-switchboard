@@ -20,6 +20,31 @@ import { BRAIN_DIR } from '../../shared/agPaths';
 
 const log = createLogger('StatsCache');
 
+/**
+ * The cache is a ledger, not a mirror of disk.
+ *
+ * A conversation present on disk is replaced by its fresh read — the file is
+ * the truth for it, and callers only pass a fresh read that succeeded in full.
+ * A conversation with no backing file keeps whatever it already had: that
+ * covers the synthetic Claude Code import, which exists only here, and any
+ * conversation the user deletes from Antigravity later.
+ */
+export function mergeIntoLedger(
+    existing: Record<string, ConvoTokenData>,
+    fresh: Record<string, ConvoTokenData>,
+    presentIds: Set<string>,
+): Record<string, ConvoTokenData> {
+    const out: Record<string, ConvoTokenData> = {};
+    for (const [cid, data] of Object.entries(existing)) {
+        if (!presentIds.has(cid)) out[cid] = data;   // no file — preserve verbatim
+    }
+    for (const [cid, data] of Object.entries(fresh)) out[cid] = data;
+    for (const [cid, data] of Object.entries(existing)) {
+        if (!out[cid]) out[cid] = data;              // present but not re-read this pass
+    }
+    return out;
+}
+
 export class StatsCache {
     /** Path to the disk cache file */
     get filePath(): string {
@@ -75,6 +100,8 @@ export class StatsCache {
         stepCounts?: Map<string, number>,
         entryCounts?: Record<string, { meta: number; steps: number }>,
         mtimes?: Record<string, number>,
+        /** Set once by the caller when absent; never recomputed here. */
+        countingChangedAt?: string,
     ): void {
         try {
             // Serialize titleMap as plain object for JSON persistence
@@ -90,6 +117,7 @@ export class StatsCache {
                 stepCounts: stepCounts ? stepCountsObj : undefined,
                 entryCounts,
                 mtimes,
+                countingChangedAt,
             };
             const tmp = this.filePath + '.tmp';
             fs.writeFileSync(tmp, JSON.stringify(data), 'utf-8');
@@ -115,7 +143,12 @@ export class StatsCache {
             titleMap = new Map(Object.entries(cache.titleMap));
         }
         // Re-aggregate from raw entries so semantic fixes apply to older caches.
+        // aggregateFromPerConvo never sets .health (it has no knowledge of the
+        // service's own per-refresh counters) — carry the persisted snapshot
+        // forward from the raw disk record instead of losing it on every
+        // synchronous cold-start load, which runs before any real refresh.
         const stats = aggregateFromPerConvo(cache.perConvo, titleMap);
+        if (cache.stats.health) stats.health = cache.stats.health;
 
         log.info(`loadSync: loaded ${cache.fetchedIds.length} conversations, titles: ${titleMap.size}`);
         return { stats, titleMap };

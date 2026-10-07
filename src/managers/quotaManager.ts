@@ -8,6 +8,7 @@ import { ServerDiscoveryService } from '../services/serverDiscovery';
 import { AccountSwitchService } from '../services/accountSwitch';
 import { TokenBaseService, TokenBaseData, WorkspaceContextData } from '../services/tokenBase';
 import { UsageStatsService } from '../services/usage';
+import { learnModelLabels, setLearnedModelLabels, allLearnedModelLabels } from '../services/usage/types';
 import { ContextWindowService, ContextWindowData } from '../services/contextWindow';
 import { LiveStream } from '../services/liveStream';
 import { StatusBarService } from '../services/statusBar';
@@ -17,6 +18,7 @@ import { EmailResolver } from '../services/emailResolver';
 
 import { QuotaViewProvider } from '../providers/quotaViewProvider';
 import { createLogger } from '../utils/logger';
+import { POLL_INTERVALS_MS, DEFAULT_POLL_INTERVAL_MS } from '../shared/uiConstants';
 
 const log = createLogger('QuotaManager');
 
@@ -45,11 +47,17 @@ export class QuotaManager {
     private lastActiveEmail = '';
 
     private static readonly CTX_CACHE_KEY = 'ag.lastContextWindow';
+    private static readonly MODEL_LABELS_KEY = 'ag.modelLabels';
+    private static readonly POLL_INTERVAL_KEY = 'ag.pollIntervalMs';
     private static readonly CASCADE_ID_LOG_LEN = 12;
     private static readonly POST_SWITCH_REFRESH_DELAY = 2000;
     private static readonly DEBOUNCE_MS = 1500;
-    /** Host-side polling interval — runs regardless of panel visibility */
-    private static readonly HOST_POLL_INTERVAL_MS = 60_000;
+    /**
+     * A message from the webview is only honoured if it names a rate the picker
+     * actually offers: the picker is the only intended caller, but a message
+     * channel is not a guarantee, and a stray value would either hammer the
+     * language server or park polling indefinitely.
+     */
     private currentUsageRange = '24h';
 
     private cachedServer: { info: ServerInfo | null; ts: number } | null = null;
@@ -68,6 +76,9 @@ export class QuotaManager {
     ) {
         this.switchService = new AccountSwitchService(context, accountManager.getAuthService());
         this.statusBar = new StatusBarService(context);
+
+        // Labels learned in past sessions, before any server has been reached.
+        setLearnedModelLabels(context.globalState.get<Record<string, string>>(QuotaManager.MODEL_LABELS_KEY, {}));
         context.subscriptions.push({ dispose: () => this.switchService.dispose() });
         context.subscriptions.push({ dispose: () => this.liveStream.destroy() });
         context.subscriptions.push({ dispose: () => this.switchController?.abort() });
@@ -86,16 +97,48 @@ export class QuotaManager {
         this.context.globalState.update(QuotaManager.CTX_CACHE_KEY, null);
         this.refresh();
 
-        // Host-side periodic poll — keeps status bar and cache fresh even
-        // when the sidebar panel is collapsed (webview timer dies without
-        // retainContextWhenHidden). This is the authoritative poll;
-        // the webview timer provides supplementary UI-driven refreshes.
-        this.hostPollTimer = setInterval(() => this.refresh(), QuotaManager.HOST_POLL_INTERVAL_MS);
+        // The only poll. It runs regardless of panel visibility, which is why the
+        // footer picker drives THIS timer: a webview-side timer dies when the
+        // sidebar is collapsed (retainContextWhenHidden is off), so a rate chosen
+        // there silently stopped applying the moment the panel closed.
+        this.startPolling(this.getPollInterval());
         context.subscriptions.push({ dispose: () => { if (this.hostPollTimer) clearInterval(this.hostPollTimer); } });
     }
 
     getSwitchService(): AccountSwitchService {
         return this.switchService;
+    }
+
+    // ── Polling rate ──
+
+    /** The stored poll interval, falling back to the default if absent or stale. */
+    getPollInterval(): number {
+        const stored = this.context.globalState.get<number>(QuotaManager.POLL_INTERVAL_KEY);
+        return this.isAllowedPollInterval(stored) ? stored : DEFAULT_POLL_INTERVAL_MS;
+    }
+
+    private isAllowedPollInterval(ms: unknown): ms is number {
+        return typeof ms === 'number' && (POLL_INTERVALS_MS as readonly number[]).includes(ms);
+    }
+
+    /**
+     * Change the polling rate and persist it. Rejects anything the footer picker
+     * does not offer rather than trusting the number it was handed.
+     */
+    setPollInterval(ms: number): void {
+        if (!this.isAllowedPollInterval(ms)) {
+            log.warn(`Ignoring poll interval ${ms}ms — not one of ${POLL_INTERVALS_MS.join(', ')}`);
+            return;
+        }
+        if (ms === this.getPollInterval() && this.hostPollTimer) return;
+        void this.context.globalState.update(QuotaManager.POLL_INTERVAL_KEY, ms);
+        this.startPolling(ms);
+        log.info(`Poll interval set to ${ms / 1000}s`);
+    }
+
+    private startPolling(ms: number): void {
+        if (this.hostPollTimer) clearInterval(this.hostPollTimer);
+        this.hostPollTimer = setInterval(() => this.refresh(), ms);
     }
 
     setViewProvider(provider: QuotaViewProvider) {
@@ -400,6 +443,7 @@ export class QuotaManager {
             if (localResult) {
                 this.lastLocalData = localResult;
                 this.updateStatusBar(localResult);
+                this.harvestModelLabels(localResult);
                 this.logQuotaFractions(localResult);
             } else {
                 this.lastLocalData = null;
@@ -566,6 +610,7 @@ export class QuotaManager {
                     if (localData) {
                         this.lastLocalData = localData;
                         this.updateStatusBar(localData);
+                        this.harvestModelLabels(localData);
                     }
                 } catch (e: any) {
                     log.warn('Post-switch local fetch failed:', e?.message);
@@ -664,6 +709,22 @@ export class QuotaManager {
 
     private updateStatusBar(data: LocalQuotaData): void {
         this.statusBar.update(data, this.getSelectedModels());
+    }
+
+    /**
+     * Record the vendor's own label for each model this account may use.
+     *
+     * The server only lists models currently offered to the signed-in tier, so
+     * labels are learned opportunistically and kept forever — a model withdrawn
+     * next month still has to render a name for the usage it already produced.
+     * Switching accounts is the richest moment to learn, since another tier
+     * exposes models this one never sees.
+     */
+    private harvestModelLabels(data: LocalQuotaData): void {
+        const fresh = learnModelLabels(data.userStatus?.cascadeModelConfigData?.clientModelConfigs);
+        if (Object.keys(fresh).length === 0) return;
+        log.info(`learned ${Object.keys(fresh).length} model label(s): ${Object.keys(fresh).join(', ')}`);
+        void this.context.globalState.update(QuotaManager.MODEL_LABELS_KEY, allLearnedModelLabels());
     }
 
     /** Diagnostic probe: log raw LS remainingFraction per model (only in diag mode) */

@@ -2,6 +2,90 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
+## [3.3.4] — 2026-08-21
+
+### Fixed
+- **The refresh-rate picker now controls refreshing.** It drove a timer inside the sidebar webview while a second, hardcoded 60-second timer in the extension host did the actual polling — so `2m` and `5m` changed nothing at all, `30s` merely added a second timer alongside the 60-second one, and any choice stopped applying the moment the panel was collapsed, because webview timers die with the panel. The picker now sets the host's interval, which is the timer that always runs, and the choice is remembered across restarts.
+
+### Changed
+- The webview no longer runs a refresh timer of its own — one timer, in the process that stays alive. The footer highlights the rate the host confirms rather than the button that was clicked, so a rate the host declines cannot leave the UI misreporting it.
+- The rate buttons are generated from a single shared list that the host also validates against, so the UI cannot offer a rate the host would silently reject.
+
+## [3.3.3] — 2026-08-18
+
+### Fixed
+- **The missing-conversation dialog no longer offers a repair it will not perform.** It reported "No missing conversations detected" and then presented a "Fix Now" button beneath a hardcoded line promising to close Antigravity and relaunch it — announcing a restart that would not happen, to fix a problem it had just said did not exist. With nothing missing it now says so plainly and offers no action; the warning and the button appear only when conversations really are absent from the sidebar. The restart notice also mentions that the current index is backed up first.
+
+## [3.3.2] — 2026-08-18
+
+### Fixed
+- **"N missing conversations" no longer cries wolf — and can no longer wreck the sidebar.** The detector compared `.pb` files against the sidebar index, but Antigravity stores conversations as SQLite `.db` now. On a machine holding 114 real conversations it found one stale `.pb` from a month earlier and reported it missing forever, since a file in a superseded format will never be indexed again.
+- **The repair itself was the bigger risk.** "Fix Now" rebuilds the index from whatever the disk scan returns and then *replaces* the stored index outright. Scanning for the wrong format meant it would have rewritten a 30-conversation sidebar down to a single entry. It now scans the current format, so the rebuild reflects what is actually there. (The previous value was, and still is, backed up to `trajectorySummaries_backup.txt` beside the state database.)
+- **Detection is silent when the conversation directory is shared.** Pointing the command-line client and the IDE at one directory — commonly by symlink — means the sidebar index lists only the IDE's own sessions by design, so every command-line conversation read as "missing". Both the warning and the repair now stand down in that case rather than guess, and the repair explains why instead of restarting the editor for nothing.
+
+## [3.3.1] — 2026-08-16
+
+### Fixed
+- **Models show their real names instead of `Placeholder M187`.** Antigravity's protocol ships blank `MODEL_PLACEHOLDER_M<n>` slots so unreleased model names never appear in the client binary, and the extension had static guesses for only six of them — none covering the Gemini 3.5, 3.6, and 3.7 families that the command-line client actually runs on. The server hands out the real label for every model an account may use, in a response the extension already fetches for quota, so those labels are now harvested from it at no extra cost. On the development machine this named 85% of all recorded calls, up from roughly 15%.
+- Labels are **remembered once seen**, so a model still renders its name after being withdrawn from the catalogue. Switching accounts learns the most, since another tier exposes models the current one never lists.
+
+### Notes
+- A handful of enums stay `Placeholder M<n>` — no account currently offers them and the stored records contain no model name, only the enum, so naming them would mean guessing. They will resolve on their own if the model reappears on any signed-in account.
+- Learned labels never override a model that already has a known rate, so date-aware pricing is unaffected.
+
+## [3.3.0] — 2026-08-15
+
+Usage is now read from Antigravity's conversation store instead of from the language server.
+
+### Why this release exists
+
+The language server can only answer for conversations that existed **when its process started**. Anything the `agy` command-line client created afterwards was invisible to it — permanently, for the life of that process. A conversation created 35 seconds after the server booted was already unreachable. For anyone working command-line-first, entire days reported zero while the data sat intact on disk.
+
+A second defect made the loss permanent: a fetch that returned nothing still recorded a freshness marker, so once a session stopped writing, its conversation was frozen at zero forever.
+
+### Your numbers will change, for five separate reasons
+
+Historical figures are **restated**, not just changed going forward. All five apply at once, which is why totals move in more than one direction:
+
+1. **Recovered sessions.** Days that reported zero now report their real usage. On the development machine: two days went from 0 to 184 and 64 calls, and four more became visible for the first time.
+2. **Sub-agent runs are counted.** When a session spawns helper agents, each has its own record. The language server refused to serve them, so they had never been counted once — about 3% of all calls.
+3. **Days are bucketed by local date.** They were bucketed by UTC while weekday charts and the activity grid used local dates, so the two disagreed. Late-evening sessions landed on the previous day.
+4. **Duplicates are removed globally.** Deduplication was per-conversation, so a call recorded by two conversations counted twice.
+5. **Live pricing actually applies.** The dynamic pricing catalogue was queried with a humanised display name while it is keyed by model id, so no lookup had ever matched and every cost figure came from a keyword guesser. One model was under-priced 3.3×.
+
+### Added
+- **Data health card** in the full dashboard — where numbers came from, how many conversations were read, how many were unreadable, which models had no known rate and were excluded from cost, and whether a cross-check ran.
+- **Cross-check against the language server.** For any conversation it can still serve, the store decode is compared field by field. The reasoning-token field, previously matched against a single sample, is now confirmed across 125 real calls with no divergence.
+- **Honest empty states.** A range with no activity says so and names the last session, instead of rendering zeros indistinguishable from a malfunction — which is how the original bug hid for days.
+- **`ag-switchboard.usageSource`** — set to `server` to restore the previous behaviour. Temporary, and intended for removal.
+
+### Fixed
+- **All three Antigravity install locations are scanned.** Only one was, so on any machine where the command-line client and the IDE keep separate directories, every command-line conversation was invisible.
+- **The activity grid keyed its cells in UTC** while walking local dates, so in any positive-offset timezone every cell sat one day off its true weekday — a Monday's usage rendered in the Tuesday column. The tooltip printed the key rather than the slot, which is why it looked correct.
+- **Unrecognised models are excluded from cost** rather than silently billed at Sonnet rates.
+- **The native database module now loads on macOS.** The search path listed one application directory that does not contain it, so every read spawned a command-line process instead — roughly 9 ms against under 1 ms.
+- **Reads no longer mark conversations as changed.** Freshness counted a sidecar file that readers create, so the first read of any conversation made it look modified forever after and refresh degenerated into a full rescan.
+- **Monthly cost, the model breakdown and the cost card no longer disagree** about the same month.
+
+### Notes
+- Existing usage history is preserved. Conversations with no file on disk — including any synthetic import — are never reconciled away.
+- Cache-write tokens are not decoded; that field's identifier was never determined, so it reports zero. The cross-check will flag it if a future build starts emitting them.
+
+## [3.2.5] — 2026-08-06
+
+### Fixed
+- **Day strip scrolled the sidebar sideways** — `.gh-strip-wrap` lacked the overflow containment `.gh-grid-wrap` has, so an over-wide child (the legend + peak footer, which needs ~225px) escaped the card and scrolled the whole tab. The wrapper now contains its own overflow, and the footer wraps to a second line instead of being pushed off the edge.
+
+## [3.2.4] — 2026-08-06
+
+### Changed
+- **Activity grid follows the selected range** — `7d` and `30d` drew a full calendar year of squares, so ~52 of the 53 week-columns were guaranteed empty and the visible data was a single lit column. Short ranges now render a day strip spanning exactly the period: 7 squares for `7d`, 30 for `30d`, month-to-date for `Month`. Colour intensity scales to the window's own peak, so a quiet week shows contrast instead of washing out against an all-time maximum. `All Time` keeps the year grid and its year selector — the only range where a calendar year is worth drawing.
+- **`24h` and `Today` show the hourly heatmap** in the full dashboard, matching the sidebar. A day grid for a sub-day range was one square.
+- **`7d` / `30d` are now whole calendar days** — they were rolling instants (`now − 7×24h`), which straddled 8 calendar days and made the grid off-by-one against its own label. They now cover the last 7 / 30 calendar days including today, so the squares drawn and the totals counted describe the same window. Totals for these two ranges shift slightly as a result.
+
+### Fixed
+- **30d windows spanning a year boundary lost half their data** — the grid dropped any day whose date did not start with the selected year. Period-scoped windows have no year to filter by.
+
 ## [3.2.3] — 2026-08-03
 
 ### Fixed

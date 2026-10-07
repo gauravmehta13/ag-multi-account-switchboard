@@ -1,6 +1,15 @@
-import * as vscode from 'vscode';
+import type * as vscode from 'vscode';
 import * as fs from 'fs';
 import { isDiagEnabled } from '../constants';
+
+const vscodeRuntime = (() => {
+    try {
+        // @ts-ignore — dynamic require for self-test compatibility
+        return require('vscode');
+    } catch {
+        return null;
+    }
+})();
 
 /** Log levels ordered by severity */
 export enum LogLevel {
@@ -33,8 +42,11 @@ let diagSinkPath: string | null = null;
  * Call once during extension activation.
  */
 export function initLogger(context: vscode.ExtensionContext, level: LogLevel = LogLevel.DEBUG): void {
-    outputChannel = vscode.window.createOutputChannel('AG Panel', { log: true });
-    context.subscriptions.push(outputChannel);
+    if (vscodeRuntime) {
+        const ch = (vscodeRuntime as typeof vscode).window.createOutputChannel('AG Panel', { log: true });
+        outputChannel = ch;
+        context.subscriptions.push(ch);
+    }
     minLevel = level;
 }
 

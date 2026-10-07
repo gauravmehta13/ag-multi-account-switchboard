@@ -1,4 +1,5 @@
 import type { TokenBaseData, WorkspaceContextData } from './services/tokenBase';
+import type { UsageHealth } from './shared/usage-components';
 
 /** Tracked account metadata (stored in globalState) */
 export interface TrackedAccount {
@@ -224,6 +225,8 @@ export interface HourlyBucket extends TokenBucket {
 /** Model breakdown entry */
 export interface ModelBucket extends TokenBucket {
     displayName: string;
+    /** Resolved model id for pricing. Optional: caches written before this existed have no value. */
+    rawModel?: string;
 }
 
 /** Cascade/conversation breakdown */
@@ -247,6 +250,8 @@ export interface WeekdayBucket extends TokenBucket {
 /** Monthly breakdown per model (for tooltip) */
 export interface MonthlyModelEntry {
     displayName: string;
+    /** Resolved model id for pricing. Optional: caches written before this existed have no value. */
+    rawModel?: string;
     tokens: number;
     cost: number;
     inp: number;
@@ -284,4 +289,16 @@ export interface DeepUsageStats {
     providers: ProviderBucket[];
     weekday: WeekdayBucket[];
     monthly: MonthlyBucket[];  // filter-independent, data-driven
+    /**
+     * True last-activity timestamp across ALL history, unaffected by the date
+     * filter. dateRange above goes blank the moment the filtered window has
+     * zero calls — exactly the case the empty state needs a real date for.
+     */
+    lastActivityAt: string;
+    /**
+     * Snapshot of what produced this data, attached by the service after
+     * aggregation (not by aggregateFromPerConvo itself). Absent until the
+     * first store-path refresh completes.
+     */
+    health?: UsageHealth;
 }

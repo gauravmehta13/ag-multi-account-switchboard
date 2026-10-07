@@ -26,11 +26,17 @@ import {
     entryFingerprint, mergePreferredEntry, isConvoDirty,
 } from './types';
 import { aggregateFromPerConvo, extractTokens } from './aggregator';
-import { StatsCache } from './cache';
+import { StatsCache, mergeIntoLedger } from './cache';
 import { ProcessLock } from './processLock';
 import { getGlobalIndexData } from '../../shared/titleResolver';
 import { BRAIN_DIR, BRAIN_DIRS, CONVERSATIONS_DIR } from '../../shared/agPaths';
+import { gridMode } from '../../shared/helpers';
 import { concurrentPool } from './pool';
+import { listConversations } from './store/conversationStore';
+import { readConversationUsage } from './store/usageReader';
+import { verifyConversation } from './store/verifier';
+import { isUnknownEnumName } from './store/enumMap';
+import type { UsageHealth } from '../../shared/usage-components';
 
 const log = createLogger('UsageStats');
 
@@ -46,6 +52,17 @@ export class UsageStatsService {
 
     /** Raw (pre-dedup) meta/steps counts per conversation — for correct offset-based delta */
     private rawFetchCounts: Record<string, { meta: number; steps: number }> = {};
+
+    /** Surfaced by the health card. */
+    public lastVerification: { compared: number; diverged: number; at: string } | null = null;
+
+    /**
+     * Snapshot of what fed the last store-path refresh — attached onto the
+     * DeepUsageStats object returned to callers (see refreshFromStore and
+     * getFilteredStats) rather than exposed as a separate channel, since the
+     * panel and sidebar already receive DeepUsageStats and nothing else.
+     */
+    private lastHealth: UsageHealth | null = null;
 
     private readonly cache = new StatsCache();
     private readonly processLock = new ProcessLock();
@@ -83,10 +100,15 @@ export class UsageStatsService {
             }
             try {
 
-                const updated = await this.incrementalRefresh(serverInfo, diskCache).catch((e: any) => {
-                    log.warn('fetchDeepStats: incrementalRefresh threw:', e?.message);
-                    return false;
-                });
+                const updated = this.useServerSource()
+                    ? await this.incrementalRefresh(serverInfo, diskCache).catch((e: any) => {
+                        log.warn('fetchDeepStats: incrementalRefresh threw:', e?.message);
+                        return false;
+                    })
+                    : !!(await this.refreshFromStore(serverInfo, diskCache).catch((e: any) => {
+                        log.warn('fetchDeepStats: refreshFromStore threw:', e?.message);
+                        return null;
+                    }));
 
                 if (updated && onBackfillComplete) onBackfillComplete(this.deepStatsCache!);
             } finally {
@@ -104,10 +126,27 @@ export class UsageStatsService {
             return null;
         }
         try {
-            return await this.twoPhaseFullFetch(serverInfo, onBackfillComplete, onProgress);
+            return this.useServerSource()
+                ? await this.twoPhaseFullFetch(serverInfo, onBackfillComplete, onProgress)
+                : await this.refreshFromStore(serverInfo, null);
         } finally {
             this.processLock.release();
         }
+    }
+
+    /**
+     * Whether usage should come from the language server instead of the
+     * conversation store. Store-read ('auto') is the default; 'server' is a
+     * temporary rollback for the case where the store path diverges from the
+     * server's numbers, kept only until the store path has run a release
+     * without divergence. Defaults to false (store) if vscode is unavailable,
+     * e.g. when this module is required by a plain-node script.
+     */
+    private useServerSource(): boolean {
+        try {
+            const vscode = require('vscode');
+            return vscode.workspace.getConfiguration('ag-switchboard').get('usageSource') === 'server';
+        } catch { return false; }
     }
 
     /**
@@ -197,7 +236,185 @@ export class UsageStatsService {
         }
     }
 
+    /**
+     * Refresh usage from the conversation store.
+     *
+     * Replaces the language-server fetch as the data path. The server only
+     * serves conversations that existed when it started, so anything the agy
+     * command-line client creates afterwards is permanently invisible to it.
+     */
+    private async refreshFromStore(serverInfo: ServerInfo, diskCache: DiskCacheData | null): Promise<DeepUsageStats | null> {
+        const conversations = listConversations();
+        if (conversations.length === 0) {
+            log.warn('refreshFromStore: no conversations found in any install root');
+            return this.deepStatsCache;
+        }
 
+        const cachedMtimes = diskCache?.mtimes || {};
+        const cachedPerConvo = diskCache?.perConvo || {};
+        const presentIds = new Set(conversations.map(c => c.id));
+
+        // A conversation sitting at zero entries is retried unconditionally, but
+        // ONLY on the first store-mode pass — this must stay a one-shot sweep,
+        // never a permanent rule. That first sweep is what recovers conversations
+        // stranded by the previous server-only path (their entries never got
+        // backfilled because that path could not see them at all — a real
+        // machine measured 27 of 108 conversations sitting at zero entries this
+        // way). Once recovery has happened, a zero-entry conversation is
+        // trusted: it genuinely has no model calls, not one the old path
+        // missed. Without the one-shot gate, those 27 get re-read, re-aggregated
+        // (~4,400 entries), and rewritten to an atomic 1.1MB cache on every
+        // 60-second poll, forever — the exact "disk write rate unchanged"
+        // regression this plan exists to avoid, and it also makes the
+        // dirty.length===0 early-return path below unreachable in practice.
+        //
+        // Gated on countingChangedAt rather than deleted outright or keyed on
+        // `cachedMtimes[c.id] === undefined`:
+        //   - Deleting it outright silently stops recovering the conversations
+        //     this whole plan was built to recover.
+        //   - Keying it on mtime-absence is the same mistake wearing a
+        //     different hat: conversations stranded by the old server path
+        //     already have a recorded mtime (that path tracked mtimes, it just
+        //     never read the entries behind them), so mtime-absence would skip
+        //     precisely the conversations that need recovering.
+        // countingChangedAt is unset before the first store-mode pass and
+        // written by it (see below), and incrementalRefresh (the 'server'-mode
+        // path) only ever forwards whatever value it read, never mints its own
+        // — so a user who has been on usageSource:'server' the whole time still
+        // gets exactly one recovery sweep the moment they switch to 'store'. A
+        // brand-new, never-before-seen conversation is still read once
+        // regardless of this gate: it is absent from cachedMtimes, and
+        // `?? 0` makes it dirty either way.
+        //
+        // Do NOT delete this gate and do NOT key it on mtime-absence — either
+        // change silently undoes the recovery this comment exists to protect.
+        const firstStorePass = !diskCache?.countingChangedAt;
+        const dirty = conversations.filter(c => {
+            const hasEntries = !!cachedPerConvo[c.id]?.entries?.length;
+            if (!hasEntries && firstStorePass) return true;
+            return c.mtimeMs > (cachedMtimes[c.id] ?? 0);
+        });
+
+        log.info(`refreshFromStore: ${dirty.length} of ${conversations.length} conversations to read`);
+
+        // Nothing changed since the last pass. incrementalRefresh returns false in
+        // the same situation specifically to suppress a redundant onBackfillComplete
+        // — mirror that here instead of re-aggregating and rewriting an identical
+        // cache. this.deepStatsCache is left exactly as the caller already set it.
+        if (dirty.length === 0) {
+            // This is the common case, not an edge case — a quick reload or a
+            // second window with nothing new — so the health card must not go
+            // dark here. No new read happened, so unreadable/skippedRows are 0
+            // (not carried forward: both are documented as "this pass", and no
+            // pass ran); unknownModels comes from the stats already on disk,
+            // which are still current since nothing changed. No cache.write
+            // happens on this path, so countingChangedAt is carried forward
+            // as-is rather than fabricated — a fresh value here would never
+            // be persisted and would silently drift on every such reload.
+            this.lastHealth = {
+                source: 'store',
+                conversations: conversations.length,
+                unreadable: 0,
+                unknownModels: (diskCache?.stats?.models || []).filter(m => isUnknownEnumName(m.displayName)).map(m => m.displayName),
+                skippedRows: 0,
+                verification: this.lastVerification,
+                countingChangedAt: diskCache?.countingChangedAt || null,
+            };
+            if (this.deepStatsCache) this.deepStatsCache.health = this.lastHealth;
+            return null;
+        }
+
+        const fresh: Record<string, ConvoTokenData> = {};
+        const mtimes: Record<string, number> = { ...cachedMtimes };
+        let failed = 0;
+        let skippedRows = 0;
+        for (const c of dirty) {
+            // Freshness comes from what listConversations() already captured, not a
+            // fresh stat taken after the read. A session that writes mid-read would
+            // otherwise end up with a newer mtime recorded than the data actually
+            // captured, and that gap would never be picked up on a later pass.
+            const before = c.mtimeMs;
+            const result = await readConversationUsage(c.dbPath);
+            // null means the read failed outright — never "no usage". Recording a
+            // failed read's mtime would freeze this conversation forever: the dirty
+            // check above only retries on a zero-entry conversation or an mtime
+            // advance, and a recorded mtime satisfies both. Skipping leaves the old
+            // mtime in place so the next pass retries it.
+            if (result === null) { failed++; continue; }
+            fresh[c.id] = { entries: result.entries };
+            mtimes[c.id] = before;
+            skippedRows += result.skipped;
+        }
+        if (failed > 0) log.warn(`refreshFromStore: ${failed} conversations unreadable this pass; will retry`);
+
+        // fresh is built only from ids in `dirty`, which is filtered from `conversations`
+        // (i.e. listConversations()'s output) — so its keys are always a subset of
+        // presentIds. mergeIntoLedger trusts that invariant rather than checking it.
+        const merged = mergeIntoLedger(cachedPerConvo, fresh, presentIds);
+
+        // The server still owns titles; only usage moved to the store. It tolerates
+        // being unreachable, so this cannot reintroduce the dependency the store
+        // path exists to remove.
+        const summaries = await this.fetchTrajectorySummaries(serverInfo).catch(() => null);
+        if (summaries) {
+            this.currentTitleMap = summaries.titleMap;
+            this.currentStepCounts = summaries.stepCounts;
+        }
+
+        const titleMap = this.currentTitleMap.size > 0
+            ? this.currentTitleMap
+            : new Map<string, string>(Object.entries(diskCache?.titleMap || {}));
+        const stats = aggregateFromPerConvo(merged, titleMap);
+
+        // Recorded once, on first sight, and threaded through every subsequent
+        // write. Rewriting it on every refresh would erase the very thing it
+        // exists to say: when counting changed, not "as of the last refresh".
+        // A cold boot with no prior cache at all (diskCache is null) has no
+        // "before" to compare against — stamping "now" there would tell a
+        // first-ever user counting changed relative to a history they never
+        // had. Only stamp it once an actual pre-existing cache was loaded and
+        // found to be missing the field.
+        const countingChangedAt: string | null = diskCache
+            ? (diskCache.countingChangedAt || new Date().toISOString())
+            : null;
+
+        // Snapshot of what fed this pass, attached onto the stats object itself
+        // (see DeepUsageStats.health) BEFORE cache.write, not after — write()
+        // serializes synchronously via JSON.stringify, so assigning .health
+        // any later would leave the persisted copy permanently one snapshot
+        // behind, and every subsequent process start would load stats with no
+        // .health at all.
+        this.lastHealth = {
+            source: 'store',
+            conversations: Object.keys(merged).length,
+            unreadable: failed,
+            unknownModels: stats.models.filter(m => isUnknownEnumName(m.displayName)).map(m => m.displayName),
+            skippedRows,
+            verification: this.lastVerification,
+            countingChangedAt,
+        };
+        stats.health = this.lastHealth;
+
+        this.deepStatsCache = stats;
+        this.currentPerConvo = merged;
+        this.cache.write(merged, Object.keys(merged), stats, titleMap,
+            this.currentStepCounts, diskCache?.entryCounts, mtimes, countingChangedAt ?? undefined);
+        log.info(`refreshFromStore: complete — ${stats.totalCalls} calls across ${Object.keys(merged).length} conversations`);
+
+        // Non-blocking: compare a few conversations the server can still serve.
+        void (async () => {
+            let compared = 0, diverged = 0;
+            for (const c of conversations.slice(0, 5)) {
+                const r = await verifyConversation(serverInfo, c.id, c.dbPath).catch(() => null);
+                if (!r) continue;
+                compared += r.compared; diverged += r.divergences.length;
+            }
+            this.lastVerification = { compared, diverged, at: new Date().toISOString() };
+            if (diverged > 0) log.warn(`verifier: ${diverged} divergences across ${compared} compared calls`);
+        })();
+
+        return stats;
+    }
 
     /**
      * Partition conversation IDs into hot (mtime > cutoff) and cold.
@@ -289,6 +506,23 @@ export class UsageStatsService {
 
             if (dirtyIds.length === 0) {
                 log.info('incrementalRefresh: nothing to fetch — all conversations up to date');
+                // Same reasoning as refreshFromStore's mirror-image early return:
+                // this is the common case, not an edge case, and must not leave
+                // the card either dark or showing a stale 'store' source/verification
+                // superimposed on data this path is now serving. verification is
+                // hardcoded null, never this.lastVerification — this path runs no
+                // verifier at all, and carrying forward a prior store-mode result
+                // would be exactly the false confidence Important 2 flagged.
+                this.lastHealth = {
+                    source: 'server',
+                    conversations: diskCache.fetchedIds.length,
+                    unreadable: 0,
+                    unknownModels: (diskCache.stats?.models || []).filter(m => isUnknownEnumName(m.displayName)).map(m => m.displayName),
+                    skippedRows: 0,
+                    verification: null,
+                    countingChangedAt: diskCache.countingChangedAt || null,
+                };
+                if (this.deepStatsCache) this.deepStatsCache.health = this.lastHealth;
                 return false;
             }
 
@@ -342,9 +576,28 @@ export class UsageStatsService {
 
             const stats = aggregateFromPerConvo(merged, summaries.titleMap);
 
+            // Attached before cache.write, same as refreshFromStore, so the
+            // persisted copy carries it too. verification is hardcoded null:
+            // this path runs no verifier, so null correctly means "not run"
+            // rather than carrying forward a stale 'store'-mode result and
+            // implying it still applies to server-sourced data.
+            this.lastHealth = {
+                source: 'server',
+                conversations: mergedIds.length,
+                unreadable: 0,
+                unknownModels: stats.models.filter(m => isUnknownEnumName(m.displayName)).map(m => m.displayName),
+                skippedRows: 0,
+                verification: null,
+                countingChangedAt: diskCache.countingChangedAt || null,
+            };
+            stats.health = this.lastHealth;
+
             this.deepStatsCache = stats;
             this.currentPerConvo = merged;
-            this.cache.write(merged, mergedIds, stats, summaries.titleMap, summaries.stepCounts, entryCounts, { ...cachedMtimes, ...currentMtimes });
+            // countingChangedAt carried forward verbatim: this is the 'server'
+            // rollback path, not the one that sets it, and a write that omitted
+            // it would erase the marker if a user ever toggles back to it.
+            this.cache.write(merged, mergedIds, stats, summaries.titleMap, summaries.stepCounts, entryCounts, { ...cachedMtimes, ...currentMtimes }, diskCache.countingChangedAt);
 
             log.info(`incrementalRefresh: complete — totalCalls=${stats.totalCalls} (${newIds.length} new + ${changedIds.length} changed convos updated)`);
             return true;
@@ -582,29 +835,18 @@ export class UsageStatsService {
             let cutoff: Date | null = null;
             let upperBound: Date | null = null;
 
-            switch (range) {
-                // Rolling presets (relative to now)
-                case '24h': cutoff = new Date(now.getTime() - 86400000); break;
-                case '7d': cutoff = new Date(now.getTime() - 7 * 86400000); break;
-                case '30d': cutoff = new Date(now.getTime() - 30 * 86400000); break;
-
-                // Calendar presets (midnight-aligned)
-                case 'today':
-                    cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                    break;
-                case 'this-week': {
-                    const dayOfWeek = now.getDay() || 7; // Mon=1, Sun=7
-                    cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek + 1);
-                    break;
-                }
-                case 'this-month':
-                    cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
-                    break;
-                case 'last-month':
-                    cutoff = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-                    upperBound = new Date(now.getFullYear(), now.getMonth(), 1);
-                    break;
-                default: break;
+            // gridMode is the SSOT for day-bounded ranges, so the squares the grid
+            // draws and the entries this filter keeps always describe the same window.
+            const mode = gridMode(range, now);
+            if (mode.kind === 'strip') {
+                cutoff = new Date(`${mode.from}T00:00:00`);       // local midnight
+                const dayAfter = new Date(`${mode.to}T00:00:00`);
+                dayAfter.setDate(dayAfter.getDate() + 1);
+                if (dayAfter < now) upperBound = dayAfter;        // closed window (last-month)
+            } else if (range === '24h') {
+                cutoff = new Date(now.getTime() - 86400000);      // rolling, pairs with the hourly view
+            } else if (range === 'today') {
+                cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             }
 
             if (cutoff) {
@@ -614,7 +856,12 @@ export class UsageStatsService {
             }
         }
 
-        return aggregateFromPerConvo(perConvo, titleMap, dateFilter);
+        const filtered = aggregateFromPerConvo(perConvo, titleMap, dateFilter);
+        // Health is a property of the last refresh, not of the selected range —
+        // reattach it here so the health card survives a range switch instead of
+        // vanishing every time aggregateFromPerConvo builds a fresh stats object.
+        if (this.lastHealth) filtered.health = this.lastHealth;
+        return filtered;
     }
 
     // ─── Trajectory Summaries (titles + stepCounts) ───
@@ -687,6 +934,11 @@ export class UsageStatsService {
         const result = this.cache.loadSync(this.currentTitleMap);
         if (!result) return null;
         this.currentTitleMap = result.titleMap;
+        // Seed lastHealth from the persisted snapshot (see StatsCache.loadSync)
+        // so a range switch immediately after this cold-start load still shows
+        // it via getFilteredStats, instead of the card only appearing once a
+        // real refresh eventually completes in this session.
+        if (result.stats.health) this.lastHealth = result.stats.health;
         // NOTE: intentionally NOT setting this.deepStatsCache here.
         // The quotaManager stores this in lastUsageStats.
         // Keeping deepStatsCache empty allows fetchDeepStats() to proceed

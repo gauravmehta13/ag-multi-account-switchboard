@@ -5,7 +5,7 @@
 
 import {
     TokenEntry, ConvoTokenData, MonthlyAccumulator, MetadataUsage,
-    PLACEHOLDER_MAP, OPUS_46_CUTOFF, PROVIDER_DISPLAY,
+    PLACEHOLDER_MAP, OPUS_46_CUTOFF, PROVIDER_DISPLAY, entryFingerprint, modelLabel,
 } from './types';
 import {
     DeepUsageStats, DailyBucket, HourlyBucket, ModelBucket,
@@ -15,6 +15,7 @@ import {
 import { matchPricing, usageTotal } from '../../shared/usage-components';
 import { HOURS_IN_DAY } from '../../shared/uiConstants';
 import { isGenericTitle, getTitleFromBrain, getTitleFromTranscript } from '../../shared/titleResolver';
+import { isoDay } from '../../shared/helpers';
 
 // ─── Model Display Name Resolution ───
 
@@ -22,6 +23,22 @@ function extractVersion(raw: string): string {
     const m = raw.match(/(?:opus|sonnet|haiku|gemini)-(\d+(?:[.-]\d+)?)/i);
     if (m) return m[1].replace('-', '.');
     return '';
+}
+
+/**
+ * The id a model should be priced under — resolved from its placeholder, but
+ * before humanization.
+ *
+ * The pricing catalog is keyed by API model id (`claude-fable-5`), while the
+ * display layer produces labels (`Fable 5`). Handing the catalog a label
+ * matches nothing, which is why dynamic pricing silently never applied.
+ */
+export function getModelPricingKey(raw: string, ts?: string): string {
+    if (!raw || raw === 'Unknown') return '';
+    if (raw === 'MODEL_PLACEHOLDER_M26' && ts && ts.slice(0, 10) < OPUS_46_CUTOFF) {
+        return 'claude-opus-4-5-thinking';
+    }
+    return PLACEHOLDER_MAP[raw] || raw;
 }
 
 /**
@@ -33,14 +50,14 @@ export function getModelDisplayName(raw: string, apiProvider?: string, ts?: stri
         return apiProvider ? (PROVIDER_DISPLAY[apiProvider] || apiProvider.replace(/^API_PROVIDER_/i, '')) : 'Unknown';
     }
 
-    // Resolve placeholders — M26 is date-aware (4.5 before cutoff, 4.6 after)
-    let resolved = PLACEHOLDER_MAP[raw] || raw;
-    if (raw === 'MODEL_PLACEHOLDER_M26' && ts && ts.slice(0, 10) < OPUS_46_CUTOFF) {
-        resolved = 'claude-opus-4-5-thinking';
-    }
+    let resolved = getModelPricingKey(raw, ts);
 
-    // Unmapped placeholders: show as readable label (e.g. "Placeholder M50")
+    // Unmapped placeholders: prefer the vendor's own label, which the server
+    // hands out for every model the account may use. Only when no label has
+    // ever been seen for this enum do we admit we don't know it.
     if (resolved === raw && /^MODEL_PLACEHOLDER_/i.test(raw)) {
+        const label = modelLabel(raw);
+        if (label) return label;
         const id = raw.replace(/^MODEL_PLACEHOLDER_/i, '');
         return `Placeholder ${id}`;
     }
@@ -92,7 +109,11 @@ function buildDailyBuckets(entries: Array<TokenEntry & { _caW: number; _reas: nu
     const map: Record<string, DailyBucket> = {};
     for (const e of entries) {
         if (e.ts.length < 10) continue;
-        const day = e.ts.slice(0, 10);
+        // Local date, not ts.slice(0,10). The stored timestamp is UTC, so a
+        // 01:39 session in a positive-offset zone would otherwise land on the
+        // previous day — and the activity grid buckets by local date, so the
+        // two would disagree. Weekday bucketing below is already local.
+        const day = isoDay(new Date(e.ts));
         if (!map[day]) map[day] = { date: day, input: 0, output: 0, cache: 0, cacheWrite: 0, reasoning: 0, calls: 0 };
         map[day].input += e.inp;
         map[day].output += e.out;
@@ -132,7 +153,7 @@ function buildModelBuckets(entries: Array<TokenEntry & { _caW: number; _reas: nu
     const map: Record<string, ModelBucket> = {};
     for (const e of entries) {
         const dn = e._displayName;
-        if (!map[dn]) map[dn] = { displayName: dn, input: 0, output: 0, cache: 0, cacheWrite: 0, reasoning: 0, calls: 0 };
+        if (!map[dn]) map[dn] = { displayName: dn, rawModel: getModelPricingKey(e.model, e.ts), input: 0, output: 0, cache: 0, cacheWrite: 0, reasoning: 0, calls: 0 };
         map[dn].input += e.inp;
         map[dn].output += e.out;
         map[dn].cache += e.cache;
@@ -205,7 +226,7 @@ function buildMonthlyBuckets(allEntries: TokenEntry[]): MonthlyBucket[] {
         mm.reasoning += e.reasoning || 0;
         mm.calls++;
         const dn = getModelDisplayName(e.model, e.provider, e.ts);
-        if (!mm.models[dn]) mm.models[dn] = { tokens: 0, inp: 0, out: 0, cache: 0, cacheWrite: 0, reas: 0 };
+        if (!mm.models[dn]) mm.models[dn] = { rawModel: getModelPricingKey(e.model, e.ts), tokens: 0, inp: 0, out: 0, cache: 0, cacheWrite: 0, reas: 0 };
         mm.models[dn].tokens += e.inp + e.out + e.cache + (e.cacheWrite || 0) + (e.reasoning || 0);
         mm.models[dn].inp += e.inp;
         mm.models[dn].out += e.out;
@@ -227,12 +248,18 @@ function buildMonthlyBuckets(allEntries: TokenEntry[]): MonthlyBucket[] {
         // Cost from ALL models (not just top 5)
         let monthCost = 0;
         for (const [name, d] of allModels) {
-            const p = matchPricing(name);
+            // An unrecognised model has no rate. Pricing it at zero would understate
+            // cost silently. The prefix is a literal, not imported from enumMap, to
+            // match the guard at the other three matchPricing call sites in
+            // shared/usage-components.ts — that file is bundled for the browser
+            // webview while enumMap is extension-host only.
+            if (name.startsWith('MODEL_UNKNOWN_')) continue;
+            const p = matchPricing(name, d.rawModel);
             monthCost += (d.inp * p.input + d.cache * p.cache + d.cacheWrite * (p.input * 1.25) + d.out * p.output + d.reas * p.reasoning) / 1_000_000;
         }
         const topModels: MonthlyModelEntry[] = allModels
             .slice(0, 5)
-            .map(([name, d]) => ({ displayName: name, tokens: d.tokens, cost: 0, inp: d.inp, out: d.out, cache: d.cache, cacheWrite: d.cacheWrite, reas: d.reas }));
+            .map(([name, d]) => ({ displayName: name, rawModel: d.rawModel, tokens: d.tokens, cost: 0, inp: d.inp, out: d.out, cache: d.cache, cacheWrite: d.cacheWrite, reas: d.reas }));
         monthly.push({
             key, label: MNAMES[monthIdx],
             input: md.input, output: md.output,
@@ -261,17 +288,35 @@ export function aggregateFromPerConvo(
 ): DeepUsageStats {
     const from = typeof dateFilter === 'string' ? dateFilter : (dateFilter.from || '');
     const to = typeof dateFilter === 'string' ? '' : (dateFilter.to || '');
+    // Dedupe across conversations, not within one. A sub-agent trajectory can
+    // record the same model call as its parent, and 7 response ids already
+    // span two conversations before sub-agent counting is enabled.
+    const seenGlobally = new Set<string>();
     // Collect ALL entries for monthly (unfiltered) and filtered entries for other buckets
     const allEntries: TokenEntry[] = [];
     const filteredEntries: Array<TokenEntry & { _caW: number; _reas: number; _displayName: string }> = [];
     const cascadeList: CascadeBucket[] = [];
     let totalIn = 0, totalOut = 0, totalCa = 0, totalCaW = 0, totalReas = 0, totalCalls = 0;
+    // Unfiltered, like allEntries below — dateRange goes blank the moment the
+    // filtered window has zero calls, which is exactly the case an honest
+    // empty state needs a real "last activity" date for.
+    let lastActivityAt = '';
 
     for (const [cid, data] of Object.entries(perConvo)) {
         let cIn = 0, cOut = 0, cCache = 0, ccW = 0, cReas = 0, cCalls = 0;
 
         for (const e of data.entries) {
+            // Placement is load-bearing. allEntries feeds the monthly buckets and
+            // is populated before the date filter, so a check placed after the
+            // filter would leave monthly totals double-counted. And a duplicate
+            // outside the window would consume the fingerprint, suppressing the
+            // in-window copy. A duplicate is a duplicate regardless of window.
+            const fp = entryFingerprint(e);
+            if (seenGlobally.has(fp)) continue;
+            seenGlobally.add(fp);
+
             allEntries.push(e);
+            if (e.ts > lastActivityAt) lastActivityAt = e.ts;
 
             // Date range filter: skip entries outside the selected window
             if (from && e.ts < from) continue;
@@ -325,5 +370,6 @@ export function aggregateFromPerConvo(
         totalCalls, daysActive: daily.length,
         cacheRate: totalTokens > 0 ? Math.round((totalCa / totalTokens) * 100) : 0,
         dateRange, daily, hourly, models, cascades: cascadeList, providers, weekday, monthly,
+        lastActivityAt,
     };
 }
